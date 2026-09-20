@@ -1,0 +1,10 @@
+[run]
+omit =
+    tests/*
+    conftest.py
+    setup_database.py
+    webhook_client.py
+    supabase_client.py
+
+[report]
+show_missing = True

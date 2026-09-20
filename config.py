@@ -1,0 +1,63 @@
+"""Application configuration loaded from environment variables."""
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv(encoding="utf-8-sig")
+
+
+def _env(name: str, default: str = "") -> str:
+    """Read an env var and strip stray whitespace/newlines from copy-pasted values."""
+    return os.getenv(name, default).strip()
+
+
+class Config:
+    """Central configuration object for the Flask app."""
+
+    SUPABASE_URL: str = _env("SUPABASE_URL")
+    SUPABASE_KEY: str = _env("SUPABASE_KEY")
+
+    ANTHROPIC_API_KEY: str = _env("ANTHROPIC_API_KEY")
+    CLAUDE_MODEL: str = "claude-sonnet-4-6"
+
+    JWT_SECRET: str = _env("JWT_SECRET")
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRY_DAYS: int = 7
+
+    # No trailing slash: compared byte-exact against the browser's Origin
+    # header for CORS. No wildcard fallback — unset must fail startup.
+    FRONTEND_URL: str = _env("FRONTEND_URL").rstrip("/")
+
+    DEBUG: bool = _env("DEBUG", "false").lower() == "true"
+    PORT: int = int(_env("PORT", "5000"))
+
+    BCRYPT_ROUNDS: int = 12
+
+    RATE_LIMIT: str = "100 per minute"
+
+    # Optional: n8n webhook URLs. Left unset, the corresponding calls are
+    # skipped (best-effort) rather than failing the request that triggered
+    # them — neither is in the required endpoint list, so nothing in this
+    # API depends on them being configured.
+    N8N_PHASE_COMPLETE_URL: str = _env("N8N_PHASE_COMPLETE_URL")
+    N8N_ONBOARDING_URL: str = _env("N8N_ONBOARDING_URL")
+
+    MAX_MESSAGE_LENGTH: int = 4000
+
+    # Every secret the app cannot run safely without.
+    _REQUIRED = (
+        "SUPABASE_URL",
+        "SUPABASE_KEY",
+        "JWT_SECRET",
+        "FRONTEND_URL",
+        "ANTHROPIC_API_KEY",
+    )
+
+    @classmethod
+    def validate(cls) -> None:
+        """Raise RuntimeError if any required secret/setting is unset."""
+        missing = [name for name in cls._REQUIRED if not getattr(cls, name)]
+        if missing:
+            raise RuntimeError(
+                "Missing required environment variable(s): " + ", ".join(missing)
+            )
