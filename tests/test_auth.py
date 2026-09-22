@@ -35,6 +35,39 @@ def test_login_unknown_email(client, fake_db):
     assert resp.status_code == 401
 
 
+def test_login_returns_503_when_supabase_unreachable(client, fake_db, monkeypatch):
+    """Regression test for the deployed hang bug: a Supabase failure must
+    surface as a fast, clean error — never an unhandled exception that
+    leaves the client hanging."""
+    import app as app_module
+
+    def raise_timeout(email):
+        raise TimeoutError("simulated Supabase timeout")
+
+    monkeypatch.setattr(app_module, "get_user_by_email", raise_timeout)
+
+    resp = client.post(LOGIN_URL, json={"email": "anyone@example.com", "password": "whatever1"})
+
+    assert resp.status_code == 503
+    assert "error" in resp.get_json()
+
+
+def test_signup_returns_503_when_supabase_unreachable(client, fake_db, monkeypatch):
+    import app as app_module
+
+    def raise_timeout(email):
+        raise TimeoutError("simulated Supabase timeout")
+
+    monkeypatch.setattr(app_module, "get_user_by_email", raise_timeout)
+
+    resp = client.post(
+        SIGNUP_URL, json={"email": "anyone@example.com", "password": "validpass1", "name": "X"}
+    )
+
+    assert resp.status_code == 503
+    assert "error" in resp.get_json()
+
+
 # --- test_auth_signup ----------------------------------------------------
 
 def test_signup_valid(client, fake_db):

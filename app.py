@@ -65,7 +65,12 @@ def create_app() -> Flask:
         if not email or not password:
             return err("email and password are required.", 400)
 
-        user = get_user_by_email(email)
+        try:
+            user = get_user_by_email(email)
+        except Exception as e:
+            print(f"[auth/login] Supabase lookup failed: {e}")
+            return err("The database is unavailable right now. Try again shortly.", 503)
+
         if not user or not user.get("password_hash") or not verify_password(password, user["password_hash"]):
             return err("Invalid email or password.", 401)
 
@@ -83,10 +88,21 @@ def create_app() -> Flask:
             return err("Enter a valid email address.", 400)
         if not is_valid_password(password):
             return err("Password must be at least 8 characters.", 400)
-        if get_user_by_email(email):
+
+        try:
+            existing = get_user_by_email(email)
+        except Exception as e:
+            print(f"[auth/signup] Supabase lookup failed: {e}")
+            return err("The database is unavailable right now. Try again shortly.", 503)
+        if existing:
             return err("An account with this email already exists.", 400)
 
-        user = create_user(email=email, password_hash=hash_password(password), name=name)
+        try:
+            user = create_user(email=email, password_hash=hash_password(password), name=name)
+        except Exception as e:
+            print(f"[auth/signup] Supabase insert failed: {e}")
+            return err("Could not create your account right now. Try again shortly.", 503)
+
         create_activity_log(user["id"], "user_signup", {})
         trigger_onboarding_webhook(user["id"], email, name)
 

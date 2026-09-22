@@ -55,9 +55,23 @@ class Config:
 
     @classmethod
     def validate(cls) -> None:
-        """Raise RuntimeError if any required secret/setting is unset."""
+        """Raise RuntimeError if any required secret/setting is unset or malformed.
+
+        SUPABASE_URL is checked for a plausible shape (not just non-empty):
+        a blank, truncated, or protocol-less value passes a bare truthiness
+        check but then makes every Supabase call hang instead of fail
+        fast (see get_client() in supabase_client.py) — catching it here,
+        at boot, turns a silent runtime hang into an immediate deploy
+        failure with a clear message.
+        """
         missing = [name for name in cls._REQUIRED if not getattr(cls, name)]
         if missing:
             raise RuntimeError(
                 "Missing required environment variable(s): " + ", ".join(missing)
+            )
+        if not cls.SUPABASE_URL.startswith("https://") or ".supabase.co" not in cls.SUPABASE_URL:
+            raise RuntimeError(
+                "SUPABASE_URL does not look like a valid Supabase project URL "
+                f"(got: {cls.SUPABASE_URL!r}). Expected https://<project-ref>.supabase.co — "
+                "check Railway's Variables tab for a truncated value or stray whitespace."
             )

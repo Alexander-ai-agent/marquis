@@ -11,18 +11,27 @@ on status=eq.active and set status='complete' on completion).
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from supabase import Client, create_client
+from supabase import Client, ClientOptions, create_client
 
 from config import Config
 
 _client: Optional[Client] = None
 
+# supabase-py's ClientOptions.postgrest_client_timeout defaults to 120
+# seconds. Against a malformed/wrong SUPABASE_URL, that means every
+# request HANGS for up to 2 minutes before failing — which Railway's edge
+# or Gunicorn's worker timeout then kills first, surfacing as an
+# unexplained request timeout rather than a clear, fast error. This is the
+# most likely cause of the reported signup/login hang: a short, explicit
+# timeout turns a silent 2-minute hang into a fast, catchable exception.
+_CLIENT_OPTIONS = ClientOptions(postgrest_client_timeout=10)
+
 
 def get_client() -> Client:
-    """Return a lazily-initialized singleton Supabase client."""
+    """Return a lazily-initialized singleton Supabase client with a short request timeout."""
     global _client
     if _client is None:
-        _client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        _client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY, options=_CLIENT_OPTIONS)
     return _client
 
 
