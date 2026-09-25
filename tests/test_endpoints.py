@@ -18,9 +18,10 @@ def test_user_profile_authenticated(client, auth_headers):
     assert body["id"] == user["id"]
     assert body["email"] == user["email"]
     assert body["onboarding_complete"] is False
+    assert body["butler_name"] == "Reeves"
     assert set(body.keys()) == {
         "id", "name", "email", "business_type", "stage",
-        "description", "onboarding_complete", "created_at",
+        "description", "butler_name", "onboarding_complete", "created_at",
     }
 
 
@@ -45,10 +46,16 @@ def test_dashboard_authenticated(client, auth_headers, fake_db):
     assert body["greeting"].endswith(f"{user['name']}.") or body["greeting"].endswith(".")
     assert body["last_butler_exchange"] == "Three things require your attention."
     assert body["phase_ring"] == {"current_phase": 2, "total_phases": 2, "percent_complete": 50.0}
-    assert len(body["stat_cards"]) == 4
+    # Exactly the three cards the dashboard renders (redesign, Sep 24).
+    assert [c["label"] for c in body["stat_cards"]][0] == "Days active"
+    assert len(body["stat_cards"]) == 3
+    assert all(c["trend"] in ("up", "down", "flat") for c in body["stat_cards"])
     assert [i["agent"] for i in body["agent_insights"]] == ["performance", "pathway", "blocker", "enhancement"]
     assert [i["type"] for i in body["agent_insights"]] == ["heartbeat", "delta", "warning", "suggestion"]
     assert len(body["quick_links"]) == 3
+    # Every quick link must point at a page the frontend actually has.
+    assert {q["action"] for q in body["quick_links"]} <= {"conversation", "progress", "analytics", "settings"}
+    assert body["sub"].startswith("Build, day")
 
 
 def test_dashboard_no_phases_yet(client, auth_headers):

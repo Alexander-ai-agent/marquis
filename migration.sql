@@ -96,3 +96,47 @@ CREATE POLICY "Users manage own activity_logs" ON public.activity_logs
 -- service role key (used by the n8n workflow and Supabase Studio).
 CREATE POLICY "Authenticated users read approved improvements" ON public.prompt_improvements
   FOR SELECT USING (approved = true);
+
+-- --------------------------------------------------------------------------
+-- Incremental additions (Sep 24-25 2026 redesign)
+-- --------------------------------------------------------------------------
+
+-- Butler naming (MARQUIS_product.md "Butler Screen Redesign"). ADD COLUMN
+-- IF NOT EXISTS, not part of the CREATE TABLE above, so this also applies
+-- to an already-deployed public.users table.
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS butler_name text DEFAULT 'Reeves';
+
+-- Custom AI Agents (MARQUIS_product.md "Custom AI Agents") — user-defined
+-- agents beyond the 4 core agents. Custom agent builder is Phase 2 per the
+-- same doc; this table is added now so the schema is ready ahead of it.
+CREATE TABLE IF NOT EXISTS public.custom_agents (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  focus text NOT NULL,
+  data_sources jsonb DEFAULT '[]',
+  created_at timestamptz DEFAULT now()
+);
+
+-- Tool connections (MARQUIS_product.md "Connected Data") — Phase 2 external
+-- tool integrations (Stripe, HubSpot, Linear, broker APIs, etc.).
+CREATE TABLE IF NOT EXISTS public.tool_connections (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) ON DELETE CASCADE,
+  tool_name text NOT NULL,
+  access_token text,
+  refresh_token text,
+  connected_at timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_custom_agents_user ON public.custom_agents(user_id);
+CREATE INDEX IF NOT EXISTS idx_tool_connections_user ON public.tool_connections(user_id);
+
+ALTER TABLE public.custom_agents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tool_connections ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users manage own custom_agents" ON public.custom_agents
+  FOR ALL USING (auth.uid() = user_id);
+
+CREATE POLICY "Users manage own tool_connections" ON public.tool_connections
+  FOR ALL USING (auth.uid() = user_id);

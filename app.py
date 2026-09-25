@@ -1,11 +1,13 @@
-"""Marquis backend — Flask application and all 6 required API routes."""
+"""Marquis backend — Flask application: the 6 original API routes plus onboarding
+(questions, pathway) and phase completion added for the Sep 24 frontend redesign."""
 from datetime import datetime, timezone
+from typing import Optional
 
 from flask import Flask, g, request
 from flask_cors import CORS
 from flask_limiter import Limiter
 
-from agents.blocker_detector import run_blocker_detector
+from agents.blocker_detector import _keywords, run_blocker_detector
 from agents.enhancement_suggester import run_enhancement_suggester
 from agents.pathway_optimizer import run_pathway_optimizer
 from agents.performance_analyst import run_performance_analyst
@@ -18,22 +20,35 @@ from auth_utils import (
     require_auth,
     verify_password,
 )
-from butler import build_agent_context, build_system_prompt, get_butler_response
+from butler import (
+    build_agent_context,
+    build_system_prompt,
+    generate_clarifying_questions,
+    generate_pathway,
+    get_butler_response,
+    parse_visualization,
+)
 from config import Config
+from enhancement_library import get_enhancements
 from responses import err
 from supabase_client import (
     create_activity_log,
     create_conversation,
+    create_phase,
     create_user,
     days_since,
     get_active_phase,
     get_approved_prompt_improvements,
     get_last_conversation,
+    get_phase_by_id,
     get_phases,
     get_recent_activity,
+    get_recent_conversations,
     get_user_by_email,
+    update_phase,
+    update_user,
 )
-from webhook_client import trigger_onboarding_webhook
+from webhook_client import notify_phase_complete, trigger_onboarding_webhook
 
 
 def create_app() -> Flask:
@@ -122,6 +137,7 @@ def create_app() -> Flask:
             "business_type": user.get("business_type"),
             "stage": user.get("stage"),
             "description": user.get("description"),
+            "butler_name": user.get("butler_name") or "Reeves",
             "onboarding_complete": bool(user.get("onboarding_complete")),
             "created_at": user.get("created_at"),
         }, 200
@@ -178,17 +194,148 @@ def create_app() -> Flask:
 
         prompt_improvements = get_approved_prompt_improvements()
 
-        system_prompt = build_system_prompt(agent_context=agent_context, prompt_improvements=prompt_improvements)
+        system_prompt = build_system_prompt(
+            agent_context=agent_context, prompt_improvements=prompt_improvements, business_type=user.get("business_type")
+        )
 
         try:
-            reply = get_butler_response(message, system_prompt, history)
+            raw_reply = get_butler_response(message, system_prompt, history)
         except Exception:
             return err("The butler is unavailable right now.", 500)
+
+        # Living Canvas: split prose from the optional visualization payload.
+        # Fail-soft — any problem yields visualization=None, never an error.
+        reply, visualization = parse_visualization(raw_reply)
+        if visualization and visualization["type"] == "phase_timeline":
+            visualization["phases"] = _timeline_phases(get_phases(user_id))
+            if not visualization["phases"]:
+                visualization = None
 
         create_conversation(user_id, "butler", reply)
         create_activity_log(user_id, "butler_interaction", {})
 
-        return {"butler_response": reply, "agent_context": agent_context}, 200
+        return {"butler_response": reply, "agent_context": agent_context, "visualization": visualization}, 200
+
+    # --- Agent signals: real data for the canvas's idle presences ----------
+
+    @app.route("/api/v1/marquis/agents/signals", methods=["GET"])
+    @require_auth
+    def agent_signals():
+        """What each agent is actually reading — so the idle canvas never
+        shows invented data to a real user. Empty lists mean "nothing to
+        read yet", which the frontend renders as an honest quiet state."""
+        user = g.current_user
+        user_id = user["id"]
+        today = datetime.now(timezone.utc).date()
+
+        # Performance: activity per day, last 14 days (normalized 0-1).
+        activity = get_recent_activity(user_id, days=14)
+        daily = [0] * 14
+        for row in activity:
+            offset = (today - datetime.fromisoformat(row["created_at"]).date()).days
+            if 0 <= offset < 14:
+                daily[13 - offset] += 1
+        peak = max(daily) or 1
+        pulse = [round(v / peak, 3) for v in daily] if any(daily) else []
+
+        # Blocker: the detector's own signal — recurring topics across the
+        # founder's messages — counted per day over the last 7 days.
+        user_msgs = [c for c in get_recent_conversations(user_id, days=7) if c["role"] == "user"]
+        topic_days = {}
+        for msg in user_msgs:
+            offset = (today - datetime.fromisoformat(msg["created_at"]).date()).days
+            if not 0 <= offset < 7:
+                continue
+            for kw in _keywords(msg["content"]):
+                topic_days.setdefault(kw, [0] * 7)[6 - offset] += 1
+        top = sorted(topic_days.items(), key=lambda kv: -sum(kv[1]))[:4]
+        topics = [{"name": name.capitalize(), "days": [min(4, d) for d in days]} for name, days in top if sum(days) >= 2]
+
+        # Enhancement: this stage's standard items, and whether each has come
+        # up in conversation yet (the suggester's own test).
+        convo_text = " ".join(c["content"].lower() for c in get_recent_conversations(user_id, days=90))
+        active = next((p for p in get_phases(user_id) if p["status"] == "active"), None)
+        stage = active["phase_name"] if active else user.get("stage")
+        items = [
+            {"name": e["enhancement"][:28], "value": 100 if e["enhancement"].lower() in convo_text else 15}
+            for e in get_enhancements(user.get("business_type"), stage)[:6]
+        ]
+
+        return {
+            "activity": pulse,
+            "phases": _timeline_phases(get_phases(user_id)),
+            "blocker_topics": topics,
+            "coverage": items if len(items) >= 3 else [],
+        }, 200
+
+    # --- Onboarding: clarifying questions + pathway reveal ----------------
+
+    @app.route("/api/v1/marquis/onboarding/questions", methods=["POST"])
+    @require_auth
+    def onboarding_questions():
+        profile, problem = _onboarding_profile(request.get_json(silent=True) or {})
+        if problem:
+            return err(problem, 400)
+        user_id = g.current_user["id"]
+        try:
+            update_user(user_id, {k: profile[k] for k in ("business_type", "stage", "description")})
+        except Exception as e:
+            print(f"[onboarding/questions] profile save failed (continuing): {e}")
+        try:
+            questions = generate_clarifying_questions(profile["business_type"], profile["stage"], profile["description"])
+        except Exception as e:
+            print(f"[onboarding/questions] generation failed: {e}")
+            return err("The butler is unavailable right now.", 502)
+        return {"questions": questions}, 200
+
+    @app.route("/api/v1/marquis/onboarding/pathway", methods=["POST"])
+    @require_auth
+    def onboarding_pathway():
+        data = request.get_json(silent=True) or {}
+        profile, problem = _onboarding_profile(data)
+        if problem:
+            return err(problem, 400)
+        answers = data.get("answers", [])
+        if not isinstance(answers, list) or len(answers) > 5:
+            return err("answers must be a list of at most 5 items.", 400)
+        user_id = g.current_user["id"]
+        try:
+            pathway = generate_pathway(profile["business_type"], profile["stage"], profile["description"], answers)
+        except Exception as e:
+            print(f"[onboarding/pathway] generation failed: {e}")
+            return err("The butler is unavailable right now.", 502)
+        try:
+            update_fields = {**{k: profile[k] for k in ("business_type", "stage", "description")}, "onboarding_complete": True}
+            butler_name = _clean_butler_name(data.get("butler_name"))
+            if butler_name:
+                update_fields["butler_name"] = butler_name
+            update_user(user_id, update_fields)
+            if not get_phases(user_id):
+                create_phase(user_id, 1, pathway["phase"]["name"], "active", pathway["phase"]["estimated_days"])
+            create_activity_log(user_id, "onboarding_complete", {})
+        except Exception as e:
+            print(f"[onboarding/pathway] persisting failed (pathway still returned): {e}")
+        return pathway, 200
+
+    # --- Phase completion (Progress page, Animation 4 + 8) ------------------
+
+    @app.route("/api/v1/marquis/phases/<phase_id>/complete", methods=["POST"])
+    @require_auth
+    def complete_phase(phase_id):
+        user_id = g.current_user["id"]
+        phase = get_phase_by_id(user_id, phase_id)
+        if not phase:
+            return err("Resource not found.", 404)
+        if phase["status"] != "active":
+            return err("Only the current phase can be marked complete.", 400)
+        actual = max(1, round(days_since(phase.get("started_at")) or 0))
+        updated = update_phase(user_id, phase_id, {"status": "complete", "actual_days": actual, "completed_at": _now_iso()})
+        next_phase = next((p for p in get_phases(user_id) if p["phase_number"] == phase["phase_number"] + 1), None)
+        if next_phase and next_phase["status"] == "future":
+            update_phase(user_id, next_phase["id"], {"status": "active", "started_at": _now_iso()})
+        create_activity_log(user_id, "phase_complete", {"phase_id": phase_id})
+        notify_phase_complete(user_id, phase_id, phase["phase_name"], phase.get("estimated_days"), actual)
+        return {"phase": {**phase, **(updated or {}), "status": "complete", "actual_days": actual}, "next_phase_id": next_phase["id"] if next_phase else None}, 200
 
     # --- 3. Dashboard ----------------------------------------------------
 
@@ -218,45 +365,62 @@ def create_app() -> Flask:
 
         week_activity = get_recent_activity(user_id, days=7)
         sessions_this_week = len({row["created_at"][:10] for row in week_activity})
+        prior_activity = [a for a in get_recent_activity(user_id, days=14) if a not in week_activity]
+        sessions_last_week = len({row["created_at"][:10] for row in prior_activity})
 
+        # Combined gap vs estimate: finished phases' overrun, plus the active
+        # phase's overrun so far (only once it's actually past its estimate).
+        combined_gap = 0
+        for p in all_phases:
+            est = p.get("estimated_days")
+            if not est:
+                continue
+            if p["status"] == "complete" and p.get("actual_days") is not None:
+                combined_gap += p["actual_days"] - est
+            elif p["status"] == "active":
+                combined_gap += max(0, round(days_since(p.get("started_at")) or 0) - est)
+
+        days_active = round(days_since(user.get("created_at")) or 0)
+
+        # Exactly three cards, in the order the dashboard shows them. `trend`
+        # drives the single directional arrow (up = gold, down = crimson).
         stat_cards = [
+            {"label": "Days active", "value": str(days_active), "delta": "since you began", "trend": "flat", "warn": False},
             {
-                "label": "Current Phase",
-                "value": active_phase["phase_name"] if active_phase else "Not started",
-                "trend_arrow": "flat",
+                "label": "Behind combined estimate" if combined_gap > 0 else "Against combined estimate",
+                "value": f"+{combined_gap}d" if combined_gap > 0 else f"{combined_gap}d",
+                "delta": "across every phase so far",
+                "trend": "down" if combined_gap > 0 else "up" if combined_gap < 0 else "flat",
+                "warn": combined_gap > 0,
             },
             {
-                "label": "Days On Phase",
-                "value": (
-                    f"{round(days_since(active_phase.get('started_at')) or 0)}/{active_phase.get('estimated_days')} days"
-                    if active_phase and active_phase.get("estimated_days")
-                    else "—"
-                ),
-                "trend_arrow": "up" if gap and gap > 0 else "down" if gap and gap < 0 else "flat",
-            },
-            {"label": "Sessions This Week", "value": sessions_this_week, "trend_arrow": "flat"},
-            {
-                "label": "Phases Complete",
-                "value": f"{completed_count}/{len(all_phases)}" if all_phases else "0/0",
-                "trend_arrow": "flat",
+                "label": "Sessions this week",
+                "value": str(sessions_this_week),
+                "delta": f"{sessions_last_week} the week before",
+                "trend": "up" if sessions_this_week > sessions_last_week else "down" if sessions_this_week < sessions_last_week else "flat",
+                "warn": False,
             },
         ]
 
         performance = run_performance_analyst(user_id)
         pathway = run_pathway_optimizer(user_id)
         blocker = run_blocker_detector(user_id)
-        improvements = get_approved_prompt_improvements(limit=1)
-        enhancement_text = (
-            f"{improvements[0]['suggestion']} — {improvements[0].get('reason', '')}"
-            if improvements
-            else "Nothing new to surface this session."
-        )
+        enhancement = run_enhancement_suggester(user_id)
+        if enhancement.get("surface_now"):
+            enhancement_text = f"{enhancement['surface_now']} — {enhancement.get('reason') or ''}".rstrip(" —")
+        else:
+            improvements = get_approved_prompt_improvements(limit=1)
+            enhancement_text = (
+                f"{improvements[0]['suggestion']} — {improvements[0].get('reason', '')}"
+                if improvements
+                else "Nothing new to surface this session."
+            )
 
         agent_insights = [
-            {"agent": "performance", "insight": performance.get("key_insight"), "type": "heartbeat"},
+            {"agent": "performance", "insight": performance.get("key_insight") or "No notable pattern yet.", "type": "heartbeat"},
             {
                 "agent": "pathway",
-                "insight": pathway.get("recommendation") or f"Pathway is {pathway.get('pathway_status')}.",
+                "insight": pathway.get("recommendation") or f"Pathway is {pathway.get('pathway_status') or 'on track'}.",
                 "type": "delta",
             },
             {
@@ -267,27 +431,27 @@ def create_app() -> Flask:
             {"agent": "enhancement", "insight": enhancement_text, "type": "suggestion"},
         ]
 
+        # `action` values are real frontend page ids (conversation/progress/analytics).
         quick_links = [
-            {
-                "title": "Continue the conversation",
-                "description": "Pick up where you left off with the butler.",
-                "action": "conversation",
-            },
-            {
-                "title": "View your pathway",
-                "description": "See every phase and how your pace compares to estimate.",
-                "action": "phases",
-            },
-            {
-                "title": "Check your profile",
-                "description": "Review your business details on file.",
-                "action": "profile",
-            },
+            {"title": "Speak with Marquis", "sub": "Resume where you left off", "action": "conversation"},
+            {"title": "The full pathway", "sub": "Every phase, against its estimate", "action": "progress"},
+            {"title": "The four at work", "sub": "What each agent is watching", "action": "analytics"},
         ]
+
+        if active_phase:
+            elapsed = round(days_since(active_phase.get("started_at")) or 0)
+            est = active_phase.get("estimated_days")
+            sub = f"{active_phase['phase_name']}, day {elapsed}" + (f" of {est} estimated." if est else ".")
+        else:
+            sub = "No phase is underway yet."
 
         return {
             "greeting": _greeting(user.get("name")),
+            "name": user.get("name"),
+            "sub": sub,
+            "active_phase_name": active_phase["phase_name"] if active_phase else None,
             "last_butler_exchange": last_butler_exchange,
+            "last_butler_exchange_at": last_butler_msg["created_at"] if last_butler_msg else None,
             "phase_ring": phase_ring,
             "stat_cards": stat_cards,
             "agent_insights": agent_insights,
@@ -327,6 +491,52 @@ def _progress_percent(phase: dict):
         elapsed = days_since(phase["started_at"]) or 0
         return round((elapsed / estimated) * 100, 1)
     return None
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _timeline_phases(rows: list) -> list:
+    """Phases in the shape the canvas's phase_timeline view renders."""
+    out = []
+    for p in rows:
+        status = {"complete": "done", "active": "current"}.get(p["status"], "future")
+        actual = p.get("actual_days")
+        if status == "current":
+            actual = round(days_since(p.get("started_at")) or 0)
+        out.append({"name": p["phase_name"], "est_days": p.get("estimated_days"), "actual_days": actual, "status": status})
+    return out
+
+
+# Curated butler names (MARQUIS_product.md "Butler Screen Redesign") —
+# formal, British, Alfred-adjacent. Validated server-side rather than
+# trusted from the client, same posture as every other onboarding field.
+BUTLER_NAMES = ("Reeves", "Sterling", "Ashford", "Camden", "Dorian", "Whitmore", "Hale", "Aldric")
+
+
+def _clean_butler_name(value) -> Optional[str]:
+    """A valid curated name (canonical casing), or None to leave it unset/unchanged."""
+    if not isinstance(value, str):
+        return None
+    match = value.strip().casefold()
+    return next((n for n in BUTLER_NAMES if n.casefold() == match), None)
+
+
+_ONBOARDING_LIMITS = {"business_type": 80, "stage": 60, "description": 6000}
+
+
+def _onboarding_profile(data: dict):
+    """Validate the onboarding profile fields. Returns (profile, error_message)."""
+    profile = {}
+    for key, limit in _ONBOARDING_LIMITS.items():
+        value = data.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return None, f"{key} is required."
+        if len(value) > limit:
+            return None, f"{key} exceeds {limit} characters."
+        profile[key] = value.strip()
+    return profile, None
 
 
 def _greeting(name: str) -> str:

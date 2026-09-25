@@ -183,9 +183,63 @@ ENHANCEMENT_LIBRARY = {
             {"enhancement": "Category expansion playbook", "reason": "Standard once first category demonstrates liquidity.", "priority": "nice_to_have", "effort": "high"},
         ],
     },
+    "Trading": {
+        "Foundation": [
+            {"enhancement": "Trade journal setup", "reason": "Standard before the first live position — without it there's no data to learn from.", "priority": "urgent", "effort": "low"},
+            {"enhancement": "Risk rules document", "reason": "Standard to define max loss per trade and per day before capital is at risk.", "priority": "urgent", "effort": "low"},
+            {"enhancement": "Position sizing framework", "reason": "Standard before sizing any trade off instinct.", "priority": "urgent", "effort": "low"},
+        ],
+        "Build": [
+            {"enhancement": "Backtesting system", "reason": "Standard before trusting a strategy with real capital.", "priority": "urgent", "effort": "medium"},
+            {"enhancement": "Strategy documentation", "reason": "Standard so the edge is written down, not just felt.", "priority": "standard", "effort": "low"},
+            {"enhancement": "Risk/reward tracking", "reason": "Standard to know the real RR being achieved, not the assumed one.", "priority": "standard", "effort": "medium"},
+        ],
+        "Launch": [
+            {"enhancement": "Live trading at reduced size", "reason": "Standard first live phase — proves the process before scaling capital.", "priority": "urgent", "effort": "low"},
+            {"enhancement": "Daily review process", "reason": "Standard to catch drift from the plan before it compounds.", "priority": "standard", "effort": "low"},
+            {"enhancement": "Drawdown limits", "reason": "Standard hard stop before live losses require one.", "priority": "urgent", "effort": "low"},
+        ],
+        "Revenue": [
+            {"enhancement": "Consistent profitability tracking", "reason": "Standard once results are real enough to measure month over month.", "priority": "standard", "effort": "medium"},
+            {"enhancement": "Scaling position size systematically", "reason": "Standard once the edge is proven — sizing up should follow a rule, not a feeling.", "priority": "standard", "effort": "medium"},
+        ],
+        "Scale": [
+            {"enhancement": "Portfolio diversification", "reason": "Standard once capital at risk in one strategy justifies spreading it.", "priority": "standard", "effort": "medium"},
+            {"enhancement": "Systematic approach", "reason": "Standard once manual execution becomes the bottleneck.", "priority": "nice_to_have", "effort": "high"},
+            {"enhancement": "Correlation analysis", "reason": "Standard once multiple positions/strategies run at once — uncorrelated risk is the point.", "priority": "standard", "effort": "medium"},
+        ],
+    },
 }
+
+
+# The onboarding UI saves display labels ("SaaS / Software", "Launched");
+# the library is keyed by short type names and phase names. Without this
+# normalization the Enhancement Suggester matched nothing for real users.
+_TYPE_ALIASES = {
+    "saas": "SaaS", "saas / software": "SaaS", "software": "SaaS",
+    "e-commerce": "E-commerce", "ecommerce": "E-commerce", "e-commerce / physical product": "E-commerce",
+    "content/creator": "Content/Creator", "content / creator": "Content/Creator", "content / creator business": "Content/Creator",
+    "service/agency": "Service/Agency", "service / agency": "Service/Agency",
+    "mobile app": "Mobile App", "mobile": "Mobile App",
+    "marketplace": "Marketplace",
+    "trading": "Trading", "trading (personal portfolio + business treasury)": "Trading",
+}
+_STAGE_ALIASES = {
+    "idea only": "Foundation", "idea": "Foundation", "validated": "Foundation",
+    "building": "Build", "launched": "Launch", "established": "Revenue",
+}
+
+
+def normalize_business_type(business_type) -> str:
+    key = (business_type or "").strip()
+    return _TYPE_ALIASES.get(key.lower(), key)
+
+
+def normalize_stage(stage) -> str:
+    key = (stage or "").strip()
+    return _STAGE_ALIASES.get(key.lower(), key)
 
 
 def get_enhancements(business_type: str, business_stage: str) -> list:
     """Return the enhancement list for a business type/stage, or [] if unknown."""
-    return ENHANCEMENT_LIBRARY.get(business_type, {}).get(business_stage, [])
+    return ENHANCEMENT_LIBRARY.get(normalize_business_type(business_type), {}).get(normalize_stage(business_stage), [])

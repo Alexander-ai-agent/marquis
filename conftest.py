@@ -136,6 +136,29 @@ class FakeDB:
     def get_recent_activity(self, user_id, days=30):
         return [a for a in self.activity_logs if a["user_id"] == user_id]
 
+    # --- writes used by onboarding + phase completion ---
+    def update_user(self, user_id, fields):
+        if user_id in self.users:
+            self.users[user_id].update(fields)
+            return self.users[user_id]
+        return None
+
+    def get_phase_by_id(self, user_id, phase_id):
+        p = self.phases.get(phase_id)
+        return p if p and p["user_id"] == user_id else None
+
+    def create_phase(self, user_id, phase_number, phase_name, status, estimated_days):
+        return self.add_phase(user_id, phase_number=phase_number, phase_name=phase_name, status=status,
+                              estimated_days=estimated_days,
+                              started_at=datetime.now(timezone.utc).isoformat() if status == "active" else None)
+
+    def update_phase(self, user_id, phase_id, fields):
+        p = self.get_phase_by_id(user_id, phase_id)
+        if not p:
+            return None
+        p.update(fields)
+        return p
+
     # --- prompt improvements ---
     def get_approved_prompt_improvements(self, limit=10):
         return [p for p in self.prompt_improvements if p.get("approved")][:limit]
@@ -149,17 +172,19 @@ _PATCH_TARGETS = {
         "create_user", "get_user_by_email", "get_user_by_id", "get_phases", "get_active_phase",
         "create_conversation", "get_recent_conversations", "get_last_conversation",
         "create_activity_log", "get_recent_activity", "get_approved_prompt_improvements",
+        "update_user", "get_phase_by_id", "create_phase", "update_phase",
     ],
     app_module: [
         "create_activity_log", "create_conversation", "create_user", "get_active_phase",
         "get_approved_prompt_improvements", "get_last_conversation", "get_phases",
         "get_recent_activity", "get_user_by_email",
+        "update_user", "get_phase_by_id", "create_phase", "update_phase", "get_recent_conversations",
     ],
     auth_utils: ["get_user_by_id"],
     performance_analyst: ["get_active_phase", "get_recent_activity", "get_recent_conversations"],
     pathway_optimizer: ["get_phases"],
     blocker_detector: ["get_recent_activity", "get_recent_conversations"],
-    enhancement_suggester: ["get_recent_conversations", "get_user_by_id"],
+    enhancement_suggester: ["get_recent_conversations", "get_user_by_id", "get_active_phase"],
 }
 
 

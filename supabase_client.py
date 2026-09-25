@@ -192,3 +192,45 @@ def get_approved_prompt_improvements(limit: int = 10) -> list:
         .execute()
     )
     return response.data
+
+
+# --- Writes used by onboarding + phase completion ---------------------------
+
+def update_user(user_id: str, fields: dict) -> Optional[dict]:
+    """Update profile columns on a user row (business_type, stage, description, onboarding_complete)."""
+    response = get_client().table("users").update(fields).eq("id", user_id).execute()
+    return response.data[0] if response.data else None
+
+
+def get_phase_by_id(user_id: str, phase_id: str) -> Optional[dict]:
+    """Return one phase, scoped to its owner (never another user's row)."""
+    response = (
+        get_client()
+        .table("phases")
+        .select("*")
+        .eq("id", phase_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else None
+
+
+def create_phase(user_id: str, phase_number: int, phase_name: str, status: str, estimated_days: Optional[int]) -> dict:
+    """Insert a phase row. Status is 'future' | 'active' | 'complete'."""
+    payload = {
+        "user_id": user_id,
+        "phase_number": phase_number,
+        "phase_name": phase_name,
+        "status": status,
+        "estimated_days": estimated_days,
+        "started_at": utcnow_iso() if status == "active" else None,
+    }
+    response = get_client().table("phases").insert(payload).execute()
+    return response.data[0]
+
+
+def update_phase(user_id: str, phase_id: str, fields: dict) -> Optional[dict]:
+    """Update a phase row, scoped to its owner."""
+    response = get_client().table("phases").update(fields).eq("id", phase_id).eq("user_id", user_id).execute()
+    return response.data[0] if response.data else None

@@ -102,6 +102,40 @@ CREATE INDEX IF NOT EXISTS idx_conversations_created ON public.conversations(cre
 CREATE INDEX IF NOT EXISTS idx_phases_user_status ON public.phases(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_user_created ON public.activity_logs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON public.activity_logs(created_at);
+
+-- Sep 24-25 2026 redesign additions.
+
+-- Butler naming (MARQUIS_product.md "Butler Screen Redesign"). A real
+-- ALTER, not folded into CREATE TABLE IF NOT EXISTS above, since that
+-- statement is a no-op against an already-existing public.users table on
+-- redeploy — this is what actually reaches an already-deployed database.
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS butler_name text DEFAULT 'Reeves';
+
+-- Custom AI Agents (MARQUIS_product.md "Custom AI Agents") — user-defined
+-- agents beyond the 4 core agents. Custom agent builder is Phase 2 per the
+-- same doc; this table is added now so the schema is ready ahead of it.
+CREATE TABLE IF NOT EXISTS public.custom_agents (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  focus text NOT NULL,
+  data_sources jsonb DEFAULT '[]',
+  created_at timestamptz DEFAULT now()
+);
+
+-- Tool connections (MARQUIS_product.md "Connected Data") — Phase 2 external
+-- tool integrations (Stripe, HubSpot, Linear, broker APIs, etc.).
+CREATE TABLE IF NOT EXISTS public.tool_connections (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) ON DELETE CASCADE,
+  tool_name text NOT NULL,
+  access_token text,
+  refresh_token text,
+  connected_at timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_custom_agents_user ON public.custom_agents(user_id);
+CREATE INDEX IF NOT EXISTS idx_tool_connections_user ON public.tool_connections(user_id);
 """
 
 # RLS on the 4 tables named in the task, keyed exactly as specified
@@ -139,9 +173,20 @@ CREATE POLICY "phases_own_rows" ON public.phases
 DROP POLICY IF EXISTS "activity_logs_own_rows" ON public.activity_logs;
 CREATE POLICY "activity_logs_own_rows" ON public.activity_logs
   FOR ALL USING (user_id = auth.uid());
+
+ALTER TABLE public.custom_agents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tool_connections ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "custom_agents_own_rows" ON public.custom_agents;
+CREATE POLICY "custom_agents_own_rows" ON public.custom_agents
+  FOR ALL USING (user_id = auth.uid());
+
+DROP POLICY IF EXISTS "tool_connections_own_rows" ON public.tool_connections;
+CREATE POLICY "tool_connections_own_rows" ON public.tool_connections
+  FOR ALL USING (user_id = auth.uid());
 """
 
-EXPECTED_TABLES = ["users", "conversations", "phases", "activity_logs", "prompt_improvements"]
+EXPECTED_TABLES = ["users", "conversations", "phases", "activity_logs", "prompt_improvements", "custom_agents", "tool_connections"]
 
 
 def require_env() -> None:

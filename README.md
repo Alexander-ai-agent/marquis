@@ -118,7 +118,10 @@ project, not something this mocked suite can honestly claim to cover.
    and redeploys on every push.
 5. Confirm `GET /health` returns `{"status": "ok"}`.
 
-## API surface (exactly 6 endpoints, as specified)
+## API surface
+
+The original 6 endpoints, plus 4 added for the Sep 24 frontend redesign
+(marked *new*).
 
 Base path: `/api/v1/marquis`
 
@@ -130,6 +133,31 @@ Base path: `/api/v1/marquis`
 | GET | `/dashboard` | Bearer | Greeting, phase ring, stat cards, 4 agent insights, quick links |
 | POST | `/conversation` | Bearer | `{message, conversation_history}` → butler reply + agent context |
 | GET | `/phases` | Bearer | This user's phases, with `progress_percent` |
+| POST | `/phases/<id>/complete` | Bearer | *new*: marks the user's **active** phase complete (actual_days from started_at), activates the next phase, logs activity, notifies the n8n phase webhook. 400 if not active, 404 if not theirs |
+| GET | `/agents/signals` | Bearer | *new*: real data for the Living Canvas's idle agent presences: `{activity[14], phases[], blocker_topics[], coverage[]}`. Empty lists mean "nothing to read yet" |
+| POST | `/onboarding/questions` | Bearer | *new*: `{business_type, stage, description}` → `{questions: [3-5]}` from Claude; saves the profile fields. 502 if generation fails |
+| POST | `/onboarding/pathway` | Bearer | *new*: profile + `answers[{question, answer}]` → `{assessment, phase{name, estimated_days, actions, tools[{name,cost}], success}, this_week}`; marks onboarding complete and creates phase 1 if the user has none |
+
+**`/conversation` now also returns `visualization`** (null on ordinary
+turns). The butler may end a reply with one sentinel line,
+`<<CANVAS {json}>>`, only when it is concretely explaining something
+visual. `butler.parse_visualization()` always strips that line from the
+stored and returned prose, and returns the payload only if it passes an
+allow-list and shape checks (`revenue_projection`, `phase_timeline`,
+`blocker_heat`, `activity_pulse`, `coverage`). Anything malformed → `null`
+(fail-soft; the frontend stays idle). `phase_timeline` data is filled
+server-side from the phases table, never from the model.
+
+**`/dashboard` now returns exactly the 3 stat cards the dashboard shows**
+(days active, combined gap vs estimate, sessions this week, each with a
+`trend`), plus `sub`, `name`, `active_phase_name` and
+`last_butler_exchange_at`. Quick-link `action`s are real frontend page ids.
+The Enhancement row now comes from the Enhancement Suggester agent.
+
+**Fixed:** the Enhancement Suggester never matched anything for real
+users. Onboarding saves display labels ("SaaS / Software", "Launched")
+while `enhancement_library` is keyed "SaaS" / "Launch";
+`normalize_business_type()` / `normalize_stage()` now map between them.
 
 Errors are `{"error": "message"}` with standard HTTP status codes
 (400/401/500). Rate limiting: 100 requests/minute, keyed by the JWT's
