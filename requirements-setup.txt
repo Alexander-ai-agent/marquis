@@ -1,0 +1,11 @@
+-r requirements.txt
+
+# Only needed to run setup_database.py locally (a direct Postgres
+# connection for DDL/RLS, since SUPABASE_URL/SUPABASE_KEY are the
+# PostgREST REST API and can't run CREATE TABLE/CREATE POLICY). Not a
+# runtime dependency of app.py — deliberately kept out of requirements.txt
+# so Railway's deploy build never needs to compile it. 2.9.9 has no
+# prebuilt wheel for Python 3.13 and fails to build from source there
+# (_PyInterpreterState_Get was removed from the stable C API); 2.9.10 ships
+# a 3.13 wheel.
+psycopg2-binary==2.9.10

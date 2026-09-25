@@ -1,6 +1,9 @@
 """One-time Supabase setup: schema, RLS policies, admin user, verification.
 
-Run once (e.g. on Railway): python setup_database.py
+Run once (e.g. on Railway): pip install -r requirements-setup.txt && python setup_database.py
+(psycopg2 lives in requirements-setup.txt, not requirements.txt — it's not
+a runtime dependency of app.py, and has no prebuilt wheel on some Python
+versions/platforms, so it's kept out of the main deploy's install step.)
 
 Why this needs a Postgres connection, not just SUPABASE_URL/SUPABASE_KEY:
 those two are the PostgREST REST API — fine for row inserts/selects, but

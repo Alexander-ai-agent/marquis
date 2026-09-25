@@ -35,7 +35,7 @@ connection string (Project Settings → Database → Connection string → URI)
 API, which can't run DDL (`CREATE TABLE`, `CREATE POLICY`).
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-setup.txt
 python setup_database.py
 ```
 
