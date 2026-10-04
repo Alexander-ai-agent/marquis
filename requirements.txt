@@ -4,8 +4,12 @@ Flask-Limiter==3.8.0
 gunicorn==22.0.0
 python-dotenv==1.0.1
 setuptools==75.6.0
-supabase==2.7.4
+# 2.7.x rejects the new sb_secret_ keys client-side ("Invalid API key").
+supabase==2.32.0
 anthropic==0.34.2
+# anthropic 0.34.2 passes `proxies=` to httpx.Client, which httpx 0.28
+# removed: unpinned, every Claude call fails at client construction.
+httpx>=0.27,<0.28
 PyJWT==2.9.0
 bcrypt==4.2.0
 requests==2.32.3

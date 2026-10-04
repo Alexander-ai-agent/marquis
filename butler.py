@@ -50,10 +50,124 @@ CANVAS_INSTRUCTIONS = (
     '- {"type":"phase_timeline","title":str}  (the real phase data is filled in for you)\n'
     '- {"type":"blocker_heat","title":str,"topics":[{"name":str,"days":[7 integers 0-4]}]}  (1-6 topics)\n'
     '- {"type":"activity_pulse","title":str,"values":[numbers 0-1]}  (7-30 values)\n'
-    '- {"type":"coverage","title":str,"items":[{"name":str,"value":0-100}]}  (3-8 items)'
+    '- {"type":"coverage","title":str,"items":[{"name":str,"value":0-100}]}  (3-8 items)\n'
+    "General blocks — prefer these whenever the fixed types above don't fit what you're explaining:\n"
+    '- {"type":"sheet","title":str,"columns":[str],"rows":[[number|str]]}  (1-8 columns, 1-40 rows; a cell string '
+    'starting "=" is a formula: SUM, AVERAGE, MIN, MAX, cell refs like B2 or B2:B7, + - * /)\n'
+    '- {"type":"chart","title":str,"unit":str,"x":[str],"series":[{"name":str,"values":[number],"projected_from":int}]}  '
+    "(2-36 x labels, 1-3 series, each values list the same length as x; projected_from optional)\n"
+    '- {"type":"drawing","title":str,"shapes":[...]}  (1-60 shapes on a 100x100 board; each shape one of '
+    '{"kind":"rect","x","y","w","h","label"}, {"kind":"line"|"arrow","x1","y1","x2","y2"}, '
+    '{"kind":"circle","x","y","r","label"}, {"kind":"text","x","y","text"})\n'
+    '- {"type":"blueprint","title":str,"regions":[{"label":str,"x":0-1,"y":0-1,"w":0-1,"h":0-1,"note":str}]}  '
+    "(1-16 regions; a layout for a page, product, or space the user wants built)\n"
+    '- {"type":"images","title":str,"query":str}  (when real photographs would help; the app fetches them)'
 )
 
-CANVAS_TYPES = ("revenue_projection", "phase_timeline", "blocker_heat", "activity_pulse", "coverage")
+CANVAS_TYPES = (
+    "revenue_projection", "phase_timeline", "blocker_heat", "activity_pulse", "coverage",
+    "sheet", "chart", "drawing", "blueprint", "images",
+)
+_FORMULA = re.compile(r"^=[A-Za-z0-9\s:+\-*/().,]{1,80}$")
+_SHAPE_KINDS = ("rect", "line", "arrow", "circle", "text")
+
+
+def _unit(v) -> bool:
+    return _num(v) and 0 <= v <= 1
+
+
+def _board(v) -> bool:
+    return _num(v) and 0 <= v <= 100
+
+
+def _validate_general(kind: str, payload: dict, out: dict) -> Optional[dict]:
+    """The general canvas blocks (sheet, chart, drawing, blueprint, images)."""
+    if kind == "sheet":
+        cols, rows = payload.get("columns"), payload.get("rows")
+        if not isinstance(cols, list) or not 1 <= len(cols) <= 8 or not all(isinstance(c, str) for c in cols):
+            return None
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 40:
+            return None
+        clean = []
+        for row in rows:
+            if not isinstance(row, list) or len(row) > len(cols):
+                return None
+            cells = []
+            for c in row:
+                if _num(c):
+                    cells.append(float(c))
+                elif isinstance(c, str) and c.startswith("="):
+                    if not _FORMULA.match(c):
+                        return None
+                    cells.append(c)
+                elif isinstance(c, str) or c is None:
+                    cells.append((c or "")[:60])
+                else:
+                    return None
+            clean.append(cells + [""] * (len(cols) - len(cells)))
+        out.update(columns=[c[:28] for c in cols], rows=clean)
+        return out
+
+    if kind == "chart":
+        x, series = payload.get("x"), payload.get("series")
+        if not isinstance(x, list) or not 2 <= len(x) <= 36 or not all(isinstance(l, str) for l in x):
+            return None
+        if not isinstance(series, list) or not 1 <= len(series) <= 3:
+            return None
+        clean = []
+        for s in series:
+            vals = s.get("values") if isinstance(s, dict) else None
+            if not isinstance(s, dict) or not isinstance(vals, list) or len(vals) != len(x) or not all(_num(v) for v in vals):
+                return None
+            item = {"name": str(s.get("name") or "")[:28], "values": [float(v) for v in vals]}
+            pf = s.get("projected_from")
+            if isinstance(pf, int) and not isinstance(pf, bool) and 0 < pf < len(x):
+                item["projected_from"] = pf
+            clean.append(item)
+        out.update(x=[l[:16] for l in x], series=clean, unit=str(payload.get("unit") or "")[:4])
+        return out
+
+    if kind == "drawing":
+        shapes = payload.get("shapes")
+        if not isinstance(shapes, list) or not 1 <= len(shapes) <= 60:
+            return None
+        clean = []
+        for s in shapes:
+            k = s.get("kind") if isinstance(s, dict) else None
+            if k not in _SHAPE_KINDS:
+                return None
+            if k == "rect" and all(_board(s.get(f)) for f in ("x", "y", "w", "h")):
+                clean.append({"kind": k, **{f: float(s[f]) for f in ("x", "y", "w", "h")}, "label": str(s.get("label") or "")[:40]})
+            elif k in ("line", "arrow") and all(_board(s.get(f)) for f in ("x1", "y1", "x2", "y2")):
+                clean.append({"kind": k, **{f: float(s[f]) for f in ("x1", "y1", "x2", "y2")}})
+            elif k == "circle" and all(_board(s.get(f)) for f in ("x", "y", "r")):
+                clean.append({"kind": k, **{f: float(s[f]) for f in ("x", "y", "r")}, "label": str(s.get("label") or "")[:40]})
+            elif k == "text" and _board(s.get("x")) and _board(s.get("y")) and isinstance(s.get("text"), str):
+                clean.append({"kind": k, "x": float(s["x"]), "y": float(s["y"]), "text": s["text"][:60]})
+            else:
+                return None
+        out["shapes"] = clean
+        return out
+
+    if kind == "blueprint":
+        regions = payload.get("regions")
+        if not isinstance(regions, list) or not 1 <= len(regions) <= 16:
+            return None
+        clean = []
+        for r in regions:
+            if not isinstance(r, dict) or not isinstance(r.get("label"), str) or not all(_unit(r.get(f)) for f in ("x", "y", "w", "h")):
+                return None
+            clean.append({"label": r["label"][:40], **{f: float(r[f]) for f in ("x", "y", "w", "h")}, "note": str(r.get("note") or "")[:80]})
+        out["regions"] = clean
+        return out
+
+    if kind == "images":
+        q = payload.get("query")
+        if not isinstance(q, str) or not q.strip():
+            return None
+        out["query"] = q.strip()[:60]
+        return out
+    return None
 _CANVAS_LINE = re.compile(r"\n?[ \t]*<<CANVAS\b(.*?)>>[ \t]*$", re.DOTALL)
 _ANY_CANVAS_TAG = re.compile(r"<<CANVAS\b.*?(>>|$)", re.DOTALL)
 
@@ -124,7 +238,7 @@ def validate_visualization(payload) -> Optional[dict]:
         out["items"] = clean
         return out
 
-    return None
+    return _validate_general(kind, payload, out)
 
 
 def parse_visualization(reply: str) -> Tuple[str, Optional[dict]]:
@@ -262,11 +376,45 @@ def get_butler_response(message: str, system_prompt: str, history: Optional[list
     """Call Claude with the butler system prompt and return the full reply text (no streaming)."""
     response = get_client().messages.create(
         model=Config.CLAUDE_MODEL,
-        max_tokens=1000,
+        max_tokens=2000,  # room for a canvas block (a drawing can run to 60 shapes)
         system=system_prompt,
         messages=_build_messages(history, message),
     )
     return response.content[0].text.strip()
+
+
+# --- Reading the user's drawing (canvas: "you draw first") -------------------
+
+INTERPRET_SYSTEM_PROMPT = (
+    "You are the Marquis butler. The founder has sketched something by hand on a canvas and wants it "
+    "turned into a proper layout or blueprint. Read the sketch: what each shape is for, how the parts "
+    "relate, and what they are trying to build. Keep their arrangement; tidy it, name the regions, and "
+    "add a short note only where it adds something. Never invent requirements they didn't draw. "
+    "Respond with JSON only, exactly: "
+    '{"understood": str (one or two sentences, in your voice, saying what you read), '
+    '"title": str, "regions": [{"label": str, "x": 0-1, "y": 0-1, "w": 0-1, "h": 0-1, "note": str}]} '
+    "with 1-16 regions in normalized coordinates (0,0 top-left)."
+)
+
+
+def interpret_drawing(png_base64: str, hint: str = "") -> Tuple[str, Optional[dict]]:
+    """Send a sketch to Claude (vision) and return (sentence, blueprint-or-None)."""
+    content = [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": png_base64}},
+        {"type": "text", "text": f"What they said alongside it: {hint[:400]}" if hint else "They said nothing alongside it."},
+    ]
+    response = get_client().messages.create(
+        model=Config.CLAUDE_MODEL,
+        max_tokens=1500,
+        system=INTERPRET_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": content}],
+    )
+    data = _extract_json(response.content[0].text)
+    if not isinstance(data, dict):
+        raise ValueError("interpretation not an object")
+    understood = str(data.get("understood") or "").strip()[:300]
+    blueprint = validate_visualization({"type": "blueprint", "title": data.get("title"), "regions": data.get("regions")})
+    return understood, blueprint
 
 
 # --- Onboarding (MARQUIS_product.md, "Onboarding flow" steps 4 and 5) --------

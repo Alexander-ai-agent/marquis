@@ -26,8 +26,10 @@ from butler import (
     generate_clarifying_questions,
     generate_pathway,
     get_butler_response,
+    interpret_drawing,
     parse_visualization,
 )
+from images import search_images
 from config import Config
 from enhancement_library import get_enhancements
 from responses import err
@@ -215,6 +217,49 @@ def create_app() -> Flask:
         create_activity_log(user_id, "butler_interaction", {})
 
         return {"butler_response": reply, "agent_context": agent_context, "visualization": visualization}, 200
+
+    # --- Canvas: read the user's drawing, find images ----------------------
+
+    @app.route("/api/v1/marquis/canvas/interpret", methods=["POST"])
+    @require_auth
+    def canvas_interpret():
+        """The user drew first: turn their sketch into a blueprint."""
+        data = request.get_json(silent=True) or {}
+        image = data.get("image")
+        hint = data.get("hint") or ""
+        if not isinstance(image, str) or not image:
+            return err("image is required.", 400)
+        if image.startswith("data:"):
+            head, _, image = image.partition(",")
+            if "image/png" not in head:
+                return err("image must be a PNG.", 400)
+        if len(image) > Config.MAX_DRAWING_BYTES:
+            return err("That drawing is too large.", 413)
+        if not isinstance(hint, str):
+            return err("hint must be text.", 400)
+        try:
+            understood, blueprint = interpret_drawing(image, hint)
+        except Exception as e:
+            print(f"[canvas/interpret] failed: {e}")
+            return err("The butler is unavailable right now.", 502)
+        if not blueprint:
+            return err("I couldn't make out a layout in that drawing.", 422)
+        create_activity_log(g.current_user["id"], "drawing_interpreted", {"regions": len(blueprint["regions"])})
+        return {"butler_response": understood or "Here is what I read.", "visualization": blueprint}, 200
+
+    @app.route("/api/v1/marquis/images/search", methods=["GET"])
+    @require_auth
+    def images_search():
+        q = (request.args.get("q") or "").strip()
+        if not q or len(q) > 60:
+            return err("q is required (max 60 characters).", 400)
+        if not Config.UNSPLASH_ACCESS_KEY:
+            return err("Image search isn't configured.", 503)
+        try:
+            return {"images": search_images(q)}, 200
+        except Exception as e:
+            print(f"[images/search] failed: {e}")
+            return err("Image search is unavailable right now.", 502)
 
     # --- Agent signals: real data for the canvas's idle presences ----------
 

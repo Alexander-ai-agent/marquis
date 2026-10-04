@@ -44,6 +44,13 @@ class Config:
 
     MAX_MESSAGE_LENGTH: int = 4000
 
+    # Optional: Unsplash image search for the canvas (`images` block).
+    # Unset -> /images/search returns 503 and the canvas says so honestly.
+    UNSPLASH_ACCESS_KEY: str = _env("UNSPLASH_ACCESS_KEY")
+
+    # Largest drawing accepted by /canvas/interpret (base64 PNG, bytes).
+    MAX_DRAWING_BYTES: int = 2_500_000
+
     # Every secret the app cannot run safely without.
     _REQUIRED = (
         "SUPABASE_URL",
