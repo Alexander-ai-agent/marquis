@@ -22,7 +22,7 @@ _cache: "OrderedDict[str, bytes]" = OrderedDict()
 
 def synthesize(text: str) -> bytes:
     """Return MP3 bytes of `text` spoken in the configured Fish Audio voice."""
-    key = hashlib.sha256(f"{Config.FISH_VOICE_ID}:{text}".encode()).hexdigest()
+    key = hashlib.sha256(f"{Config.FISH_MODEL}:{Config.FISH_VOICE_ID}:{text}".encode()).hexdigest()
     if key in _cache:
         _cache.move_to_end(key)
         return _cache[key]
@@ -36,7 +36,7 @@ def synthesize(text: str) -> bytes:
             "normalize": True,
             "prosody": {"speed": SPEED},
         },
-        headers={"Authorization": f"Bearer {Config.FISH_AUDIO_API_KEY}"},
+        headers={"Authorization": f"Bearer {Config.FISH_AUDIO_API_KEY}", "model": Config.FISH_MODEL},
         timeout=TIMEOUT_S,
     )
     res.raise_for_status()

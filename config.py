@@ -57,6 +57,9 @@ class Config:
     # default is "Brian British" from the Fish Audio library.
     FISH_AUDIO_API_KEY: str = _env("FISH_AUDIO_API_KEY") or _env("FISHAUDIO_API_KEY")
     FISH_VOICE_ID: str = _env("FISH_VOICE_ID", "65c0b8155c464a648161af8877404f11")
+    # Fish Audio TTS model (sent as the `model` header). The free model runs
+    # without API credit; set FISH_MODEL=s2.1-pro once the account is funded.
+    FISH_MODEL: str = _env("FISH_MODEL", "s2.1-pro-free")
     MAX_SPEECH_CHARS: int = 1500
 
     # Largest drawing accepted by /canvas/interpret (base64 PNG, bytes).
