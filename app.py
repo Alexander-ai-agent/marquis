@@ -65,7 +65,7 @@ def create_app() -> Flask:
 
     CORS(
         app,
-        origins=[Config.FRONTEND_URL],
+        origins=[Config.FRONTEND_URL, *Config.CORS_EXTRA_ORIGINS],
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization"],
     )

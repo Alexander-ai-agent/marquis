@@ -27,6 +27,14 @@ class Config:
     # No trailing slash: compared byte-exact against the browser's Origin
     # header for CORS. No wildcard fallback — unset must fail startup.
     FRONTEND_URL: str = _env("FRONTEND_URL").rstrip("/")
+    # Extra exact origins (comma-separated), e.g. the local dev servers the
+    # frontend runs on until it is hosted. Auth is a bearer token, not a
+    # cookie, so a listed origin gains nothing without a user's token.
+    CORS_EXTRA_ORIGINS: tuple = tuple(
+        o.strip().rstrip("/")
+        for o in _env("CORS_EXTRA_ORIGINS", "http://localhost:6262,http://127.0.0.1:6262,http://localhost:4173").split(",")
+        if o.strip()
+    )
 
     DEBUG: bool = _env("DEBUG", "false").lower() == "true"
     PORT: int = int(_env("PORT", "5000"))
