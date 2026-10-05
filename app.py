@@ -21,6 +21,7 @@ from auth_utils import (
     verify_password,
 )
 from butler import (
+    answer_from_web,
     build_agent_context,
     build_system_prompt,
     generate_clarifying_questions,
@@ -28,8 +29,10 @@ from butler import (
     get_butler_response,
     interpret_drawing,
     parse_visualization,
+    parse_web_request,
 )
 from images import search_images
+from web import research
 from config import Config
 from enhancement_library import get_enhancements
 from responses import err
@@ -197,7 +200,8 @@ def create_app() -> Flask:
         prompt_improvements = get_approved_prompt_improvements()
 
         system_prompt = build_system_prompt(
-            agent_context=agent_context, prompt_improvements=prompt_improvements, business_type=user.get("business_type")
+            agent_context=agent_context, prompt_improvements=prompt_improvements, business_type=user.get("business_type"),
+            web_enabled=bool(Config.TAVILY_API_KEY),
         )
 
         try:
@@ -205,9 +209,16 @@ def create_app() -> Flask:
         except Exception:
             return err("The butler is unavailable right now.", 500)
 
-        # Living Canvas: split prose from the optional visualization payload.
-        # Fail-soft — any problem yields visualization=None, never an error.
-        reply, visualization = parse_visualization(raw_reply)
+        # The butler decides when it needs the web: a <<WEB query>> reply
+        # means "read the pages, then answer from them".
+        sources = []
+        web_query = parse_web_request(raw_reply) if Config.TAVILY_API_KEY else None
+        if web_query:
+            reply, visualization, sources = _answer_with_web(message, web_query)
+        else:
+            # Living Canvas: split prose from the optional visualization payload.
+            # Fail-soft — any problem yields visualization=None, never an error.
+            reply, visualization = parse_visualization(raw_reply)
         if visualization and visualization["type"] == "phase_timeline":
             visualization["phases"] = _timeline_phases(get_phases(user_id))
             if not visualization["phases"]:
@@ -216,7 +227,8 @@ def create_app() -> Flask:
         create_conversation(user_id, "butler", reply)
         create_activity_log(user_id, "butler_interaction", {})
 
-        return {"butler_response": reply, "agent_context": agent_context, "visualization": visualization}, 200
+        return {"butler_response": reply, "agent_context": agent_context, "visualization": visualization,
+                "sources": sources}, 200
 
     # --- Canvas: read the user's drawing, find images ----------------------
 
@@ -260,6 +272,37 @@ def create_app() -> Flask:
         except Exception as e:
             print(f"[images/search] failed: {e}")
             return err("Image search is unavailable right now.", 502)
+
+    @app.route("/api/v1/marquis/research", methods=["POST"])
+    @require_auth
+    def web_research():
+        """Search the web (Tavily), read the top pages (Scrapling), answer with citations."""
+        data = request.get_json(silent=True) or {}
+        query = data.get("query")
+        if not isinstance(query, str) or not query.strip() or len(query) > 300:
+            return err("query is required (max 300 characters).", 400)
+        if not Config.TAVILY_API_KEY:
+            return err("Web research isn't configured.", 503)
+        query = query.strip()
+        try:
+            sources = research(query)
+        except Exception as e:
+            print(f"[research] search failed: {e}")
+            return err("Web search is unavailable right now.", 502)
+        if not sources:
+            return {"butler_response": "I found nothing on the web that answers that.",
+                    "visualization": None, "sources": []}, 200
+        try:
+            text, viz = answer_from_web(query, sources)
+        except Exception as e:
+            print(f"[research] answer failed: {e}")
+            return err("The butler is unavailable right now.", 502)
+        create_activity_log(g.current_user["id"], "web_research", {"sources": len(sources)})
+        return {
+            "butler_response": text,
+            "visualization": viz,
+            "sources": _public_sources(sources),
+        }, 200
 
     # --- Agent signals: real data for the canvas's idle presences ----------
 
@@ -518,6 +561,30 @@ def create_app() -> Flask:
         return err("Something went wrong.", 500)
 
     return app
+
+
+def _public_sources(sources: list) -> list:
+    return [{"n": i, "title": s["title"], "url": s["url"]} for i, s in enumerate(sources, 1)]
+
+
+def _answer_with_web(message: str, query: str):
+    """Read the web for `query` and answer `message` from it -> (reply, visualization, sources).
+
+    Never raises: a failed search or answer becomes an honest sentence.
+    """
+    try:
+        sources = research(query)
+    except Exception as e:
+        print(f"[conversation] web search failed: {e}")
+        return "I tried to look that up, but the web isn't answering just now.", None, []
+    if not sources:
+        return "I looked, and found nothing on the web that answers that.", None, []
+    try:
+        reply, visualization = answer_from_web(message, sources)
+    except Exception as e:
+        print(f"[conversation] web answer failed: {e}")
+        return "I read the pages, but couldn't compose an answer just now.", None, []
+    return reply, visualization, _public_sources(sources)
 
 
 def _progress_percent(phase: dict):

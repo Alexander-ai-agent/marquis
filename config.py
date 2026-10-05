@@ -48,6 +48,10 @@ class Config:
     # Unset -> /images/search returns 503 and the canvas says so honestly.
     UNSPLASH_ACCESS_KEY: str = _env("UNSPLASH_ACCESS_KEY")
 
+    # Optional: Tavily web search for /research (pages then read via Scrapling).
+    # Unset -> /research returns 503.
+    TAVILY_API_KEY: str = _env("TAVILY_API_KEY")
+
     # Largest drawing accepted by /canvas/interpret (base64 PNG, bytes).
     MAX_DRAWING_BYTES: int = 2_500_000
 
