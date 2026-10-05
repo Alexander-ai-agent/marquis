@@ -55,7 +55,7 @@ class Config:
     # Optional: Fish Audio voice for Alfred (/voice). Unset key -> 503 and the
     # frontend falls back to browser speech. Voice is swappable without code:
     # default is "Brian British" from the Fish Audio library.
-    FISH_AUDIO_API_KEY: str = _env("FISH_AUDIO_API_KEY")
+    FISH_AUDIO_API_KEY: str = _env("FISH_AUDIO_API_KEY") or _env("FISHAUDIO_API_KEY")
     FISH_VOICE_ID: str = _env("FISH_VOICE_ID", "65c0b8155c464a648161af8877404f11")
     MAX_SPEECH_CHARS: int = 1500
 
