@@ -52,6 +52,13 @@ class Config:
     # Unset -> /research returns 503.
     TAVILY_API_KEY: str = _env("TAVILY_API_KEY")
 
+    # Optional: Fish Audio voice for Alfred (/voice). Unset key -> 503 and the
+    # frontend falls back to browser speech. Voice is swappable without code:
+    # default is "Brian British" from the Fish Audio library.
+    FISH_AUDIO_API_KEY: str = _env("FISH_AUDIO_API_KEY")
+    FISH_VOICE_ID: str = _env("FISH_VOICE_ID", "65c0b8155c464a648161af8877404f11")
+    MAX_SPEECH_CHARS: int = 1500
+
     # Largest drawing accepted by /canvas/interpret (base64 PNG, bytes).
     MAX_DRAWING_BYTES: int = 2_500_000
 

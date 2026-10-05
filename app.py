@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from flask import Flask, g, request
+from flask import Flask, Response, g, request
 from flask_cors import CORS
 from flask_limiter import Limiter
 
@@ -32,6 +32,7 @@ from butler import (
     parse_web_request,
 )
 from images import search_images
+from voice import synthesize
 from web import research
 from config import Config
 from enhancement_library import get_enhancements
@@ -272,6 +273,22 @@ def create_app() -> Flask:
         except Exception as e:
             print(f"[images/search] failed: {e}")
             return err("Image search is unavailable right now.", 502)
+
+    @app.route("/api/v1/marquis/voice", methods=["POST"])
+    @require_auth
+    def voice():
+        """Alfred's line as speech (Fish Audio MP3)."""
+        text = (request.get_json(silent=True) or {}).get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > Config.MAX_SPEECH_CHARS:
+            return err(f"text is required (max {Config.MAX_SPEECH_CHARS} characters).", 400)
+        if not Config.FISH_AUDIO_API_KEY:
+            return err("Voice isn't configured.", 503)
+        try:
+            audio = synthesize(text.strip())
+        except Exception as e:
+            print(f"[voice] synthesis failed: {e}")
+            return err("The voice is unavailable right now.", 502)
+        return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control": "private, max-age=86400"})
 
     @app.route("/api/v1/marquis/research", methods=["POST"])
     @require_auth
