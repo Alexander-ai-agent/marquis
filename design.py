@@ -76,6 +76,14 @@ DESIGN_SYSTEM_PROMPT = (
 )
 
 
+def _clip(text: str, limit: int) -> str:
+    """Shorten to `limit` characters at a word boundary, marking the cut."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(",;:—-") + "…"
+
+
 def _coord(v) -> bool:
     return _num(v) and _BOARD_MIN <= v <= _BOARD_MAX
 
@@ -166,7 +174,7 @@ def validate_design(payload) -> Optional[dict]:
             continue
         clean.append({
             "name": str(v.get("name") or f"Concept {len(clean) + 1}")[:40],
-            "note": str(v.get("note") or "")[:120],
+            "note": _clip(str(v.get("note") or ""), 220),
             "background": v.get("background") if v.get("background") in BACKGROUNDS else "ground",
             "shapes": shapes,
         })
