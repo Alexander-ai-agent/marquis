@@ -363,10 +363,18 @@ def test_build_system_prompt_matches_hardcoded_text_outside_placeholder():
         prompt_improvements=[],
     )
     assert prompt.startswith(
-        "You are the Marquis butler. A guide with the mindset of someone who has already "
-        "built something significant."
+        "You are Alfred, the personal butler and intelligence agent inside MARQUIS. You are not an AI "
+        "assistant and must never describe yourself as one."
     )
-    assert "Never more than 3 paragraphs per response." in prompt
+    # The persona block comes first, whole; data injection follows it.
+    assert prompt.index("PERSONAL CONTEXT") < prompt.index("AGENT CONTEXT:")
+    for heading in ("VOICE AND REGISTER", "PARALINGUISTIC MARKERS", "ADDRESSING THE USER",
+                    "EMOTIONAL HONESTY", "BANNED PHRASES", "BREVITY"):
+        assert heading in prompt
+
+
+def test_research_answers_use_the_same_persona():
+    assert butler.research_system_prompt("brief").startswith(butler.ALFRED_PERSONA)
 
 
 def test_build_messages_maps_butler_role_and_filters_invalid_entries():

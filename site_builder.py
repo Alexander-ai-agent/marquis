@@ -31,8 +31,9 @@ SITE_SYSTEM_PROMPT = (
     "show a thank-you state in JS, they never submit anywhere).\n\n"
     "Keep it focused: a landing page is usually a hero, three to five sections, and a footer. Stay under about "
     "500 lines.\n\n"
-    "Output format, exactly: first line an HTML comment <!-- SAID: one sentence in a formal butler's voice "
-    "describing what was built -->, then the document starting with <!DOCTYPE html>. Nothing else: no "
+    "Output format, exactly: first line an HTML comment <!-- SAID: one short spoken sentence from Alfred, the "
+    "user's butler (natural and composed, may call them \"sir\", never \"certainly\" or \"of course\"), saying "
+    "what was built -->, then the document starting with <!DOCTYPE html>. Nothing else: no "
     "markdown fences, no commentary."
 )
 
