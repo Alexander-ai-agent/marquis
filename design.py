@@ -182,7 +182,8 @@ def _ask_designer(model: str, brief: str) -> str:
         system=DESIGN_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": f"BRIEF: {brief}"}],
     )
-    return response.content[0].text
+    # Newer models may lead with a non-text block (e.g. thinking); read only the text.
+    return "".join(getattr(b, "text", None) or "" for b in response.content if getattr(b, "type", "text") == "text")
 
 
 def design_canvas(brief: str) -> Tuple[str, Optional[dict]]:

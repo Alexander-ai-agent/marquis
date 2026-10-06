@@ -105,6 +105,20 @@ def test_design_falls_back_to_conversation_model(monkeypatch):
     assert used == ["strong-model", "base-model"] and viz["type"] == "design"
 
 
+def test_design_reads_text_after_a_leading_non_text_block(monkeypatch):
+    raw = json.dumps({"said": "Three marks.", "design": MARK})
+
+    class Client:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                thinking = type("T", (), {"type": "thinking", "thinking": "..."})()
+                return type("R", (), {"content": [thinking, type("B", (), {"type": "text", "text": raw})()]})()
+    monkeypatch.setattr(design, "get_client", lambda: Client)
+    said, viz = design.design_canvas("logo")
+    assert said == "Three marks." and viz["type"] == "design"
+
+
 def test_design_canvas_parses_model_json(monkeypatch):
     raw = json.dumps({"said": "A stride, held in a circle.", "design": MARK})
 
