@@ -30,9 +30,12 @@ from butler import (
     interpret_drawing,
     parse_visualization,
     parse_web_request,
+    split_build_request,
     split_design_request,
+    REPLY_STYLES,
 )
 from design import design_canvas
+from site_builder import build_site
 from images import search_images
 from voice import synthesize
 from web import research
@@ -188,6 +191,7 @@ def create_app() -> Flask:
             return err(f"message exceeds {Config.MAX_MESSAGE_LENGTH} characters.", 400)
         if not isinstance(history, list):
             return err("conversation_history must be a list.", 400)
+        reply_style = data.get("reply_style") if data.get("reply_style") in REPLY_STYLES else "brief"
 
         user = g.current_user
         user_id = user["id"]
@@ -204,7 +208,7 @@ def create_app() -> Flask:
 
         system_prompt = build_system_prompt(
             agent_context=agent_context, prompt_improvements=prompt_improvements, business_type=user.get("business_type"),
-            web_enabled=bool(Config.TAVILY_API_KEY),
+            web_enabled=bool(Config.TAVILY_API_KEY), reply_style=reply_style,
         )
 
         try:
@@ -216,21 +220,25 @@ def create_app() -> Flask:
         # means "read the pages, then answer from them".
         sources = []
         web_query = parse_web_request(raw_reply) if Config.TAVILY_API_KEY else None
-        design = None
+        design = build = None
         if web_query:
-            reply, visualization, sources = _answer_with_web(message, web_query)
+            reply, visualization, sources = _answer_with_web(message, web_query, reply_style)
         else:
-            # A <<DESIGN brief>> line hands the work to the designer; the
-            # frontend fetches it from /canvas/design while the butler speaks.
+            # A <<DESIGN brief>> line hands the work to the designer and a
+            # <<BUILD brief>> line to the builder; the frontend fetches the
+            # result (/canvas/design, /canvas/site) while the butler speaks.
             prose, brief = split_design_request(raw_reply)
+            prose, build_brief = split_build_request(prose)
             if brief:
                 design = {"brief": brief}
+            elif build_brief:
+                build = {"brief": build_brief}
             # Living Canvas: split prose from the optional visualization payload.
             # Fail-soft — any problem yields visualization=None, never an error.
             reply, visualization = parse_visualization(prose)
-            if design:
+            if design or build:
                 visualization = None
-                reply = reply or "Allow me a moment at the drafting table."
+                reply = reply or ("Allow me a moment at the drafting table." if design else "I'll have it built for you.")
         if visualization and visualization["type"] == "phase_timeline":
             visualization["phases"] = _timeline_phases(get_phases(user_id))
             if not visualization["phases"]:
@@ -240,7 +248,7 @@ def create_app() -> Flask:
         create_activity_log(user_id, "butler_interaction", {})
 
         return {"butler_response": reply, "agent_context": agent_context, "visualization": visualization,
-                "sources": sources, "design": design}, 200
+                "sources": sources, "design": design, "build": build}, 200
 
     # --- Canvas: read the user's drawing, find images ----------------------
 
@@ -301,6 +309,23 @@ def create_app() -> Flask:
             return err("The designer couldn't produce a usable composition.", 422)
         create_activity_log(g.current_user["id"], "design_drafted", {"variants": len(design["variants"])})
         return {"butler_response": said, "visualization": design}, 200
+
+    @app.route("/api/v1/marquis/canvas/site", methods=["POST"])
+    @require_auth
+    def canvas_site():
+        """The builder makes the page the butler handed over."""
+        brief = (request.get_json(silent=True) or {}).get("brief")
+        if not isinstance(brief, str) or not brief.strip() or len(brief) > 500:
+            return err("brief is required (max 500 characters).", 400)
+        try:
+            said, site = build_site(brief.strip())
+        except Exception as e:
+            print(f"[canvas/site] failed: {e}")
+            return err("The builder is unavailable right now.", 502)
+        if not site:
+            return err("The builder couldn't produce a working page.", 422)
+        create_activity_log(g.current_user["id"], "site_built", {"bytes": len(site["html"])})
+        return {"butler_response": said, "visualization": site}, 200
 
     @app.route("/api/v1/marquis/voice", methods=["POST"])
     @require_auth
@@ -612,7 +637,7 @@ def _public_sources(sources: list) -> list:
     return [{"n": i, "title": s["title"], "url": s["url"]} for i, s in enumerate(sources, 1)]
 
 
-def _answer_with_web(message: str, query: str):
+def _answer_with_web(message: str, query: str, reply_style: str = "brief"):
     """Read the web for `query` and answer `message` from it -> (reply, visualization, sources).
 
     Never raises: a failed search or answer becomes an honest sentence.
@@ -625,7 +650,7 @@ def _answer_with_web(message: str, query: str):
     if not sources:
         return "I looked, and found nothing on the web that answers that.", None, []
     try:
-        reply, visualization = answer_from_web(message, sources)
+        reply, visualization = answer_from_web(message, sources, reply_style)
     except Exception as e:
         print(f"[conversation] web answer failed: {e}")
         return "I read the pages, but couldn't compose an answer just now.", None, []

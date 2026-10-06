@@ -176,7 +176,7 @@ def test_conversation_reads_web_when_butler_asks(client, auth_headers, mock_clau
         asked["q"] = q
         return [{"title": "Linear pricing", "url": "https://linear.app/pricing", "text": "Basic $10"}]
     monkeypatch.setattr(app_module, "research", fake_research)
-    monkeypatch.setattr(app_module, "answer_from_web", lambda m, s: ("Basic is $10 a seat [1].", None))
+    monkeypatch.setattr(app_module, "answer_from_web", lambda m, s, style="brief": ("Basic is $10 a seat [1].", None))
     body = client.post(CONVERSATION_URL, headers=headers, json={"message": "what does Linear charge?"}).get_json()
     assert asked["q"] == "linear pricing"
     assert body["butler_response"] == "Basic is $10 a seat [1]." and body["sources"][0]["url"] == "https://linear.app/pricing"

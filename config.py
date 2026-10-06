@@ -22,6 +22,9 @@ class Config:
     # The designer (/canvas/design) uses the strongest model for craft; it
     # falls back to CLAUDE_MODEL if the key can't use this one.
     DESIGN_MODEL: str = _env("DESIGN_MODEL", "claude-opus-5-5")
+    # The builder (/canvas/site) writes a whole page; a fast model keeps it
+    # inside the request timeout.
+    SITE_MODEL: str = _env("SITE_MODEL", "claude-sonnet-4-6")
 
     JWT_SECRET: str = _env("JWT_SECRET")
     JWT_ALGORITHM: str = "HS256"
