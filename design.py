@@ -45,7 +45,15 @@ DESIGN_SYSTEM_PROMPT = (
     "letter-spacing. Keep text short.\n"
     "- For a logo, mark or icon, give THREE genuinely different concepts (for example a monogram, an abstract "
     "symbol, and an emblem or lockup). For a poster, card or page visual, give one or two.\n"
-    "- It must hold up small: a mark should still read at 16 pixels.\n\n"
+    "- It must hold up small: a mark should still read at 16 pixels.\n"
+    "- Avoid the literal and the generic: no stick figures, no plain arrows, no clip-art, no stacked boxes. "
+    "Find the one clever idea (a letter hidden in negative space, two forms that share an edge, a single "
+    "continuous line, a shape that reads two ways) and execute it with precision.\n"
+    "- Craft shows in detail: consistent radii, deliberate overlaps (later shapes paint over earlier ones, so "
+    "use ground-coloured shapes to cut negative space), and a lockup where mark and wordmark relate in scale.\n"
+    "- Text must fit the board: a line is roughly characters x size x 0.6 wide in mono and x 0.5 in serif "
+    "(plus letter-spacing x characters). Size it so it sits inside 8-92.\n"
+    "- Before answering, check each concept against the brief and redraw any that is merely adequate.\n\n"
     "Palette (paints): none, ink (warm white), ink-soft (dim warm white), gold, gold-light (champagne), amber, "
     "bronze, oxblood, ground (near-black), gold-gradient, ink-gradient, dusk-gradient (gold into oxblood). "
     "Backgrounds: ground, ink, gold, oxblood.\n\n"
@@ -167,15 +175,29 @@ def validate_design(payload) -> Optional[dict]:
     return {"type": "design", "title": str(payload.get("title") or "Design")[:60], "variants": clean}
 
 
-def design_canvas(brief: str) -> Tuple[str, Optional[dict]]:
-    """Have the designer realise `brief`; returns (sentence, design-or-None)."""
+def _ask_designer(model: str, brief: str) -> str:
     response = get_client().messages.create(
-        model=Config.CLAUDE_MODEL,
-        max_tokens=7000,
+        model=model,
+        max_tokens=8000,
         system=DESIGN_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": f"BRIEF: {brief}"}],
     )
-    data = _extract_json(response.content[0].text)
+    return response.content[0].text
+
+
+def design_canvas(brief: str) -> Tuple[str, Optional[dict]]:
+    """Have the designer realise `brief`; returns (sentence, design-or-None).
+
+    Uses the stronger DESIGN_MODEL when the key has it, falling back to the
+    conversation model so a design is never lost to model availability."""
+    try:
+        text = _ask_designer(Config.DESIGN_MODEL, brief)
+    except Exception as e:
+        if Config.DESIGN_MODEL == Config.CLAUDE_MODEL:
+            raise
+        print(f"[design] {Config.DESIGN_MODEL} unavailable ({e}); using {Config.CLAUDE_MODEL}")
+        text = _ask_designer(Config.CLAUDE_MODEL, brief)
+    data = _extract_json(text)
     if not isinstance(data, dict):
         raise ValueError("design reply not an object")
     said = str(data.get("said") or "").strip()[:300]

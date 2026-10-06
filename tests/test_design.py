@@ -87,6 +87,24 @@ def test_rotation_defaults_to_board_centre():
     assert s["rotate"] == 45 and s["ox"] == 50 and s["oy"] == 50
 
 
+def test_design_falls_back_to_conversation_model(monkeypatch):
+    used = []
+
+    class Client:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                used.append(kw["model"])
+                if kw["model"] == "strong-model":
+                    raise RuntimeError("model not available")
+                return type("R", (), {"content": [type("B", (), {"text": json.dumps({"said": "x", "design": MARK})})()]})()
+    monkeypatch.setattr(design, "get_client", lambda: Client)
+    monkeypatch.setattr(design.Config, "DESIGN_MODEL", "strong-model")
+    monkeypatch.setattr(design.Config, "CLAUDE_MODEL", "base-model")
+    _, viz = design.design_canvas("logo")
+    assert used == ["strong-model", "base-model"] and viz["type"] == "design"
+
+
 def test_design_canvas_parses_model_json(monkeypatch):
     raw = json.dumps({"said": "A stride, held in a circle.", "design": MARK})
 
