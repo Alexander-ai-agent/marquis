@@ -30,7 +30,9 @@ from butler import (
     interpret_drawing,
     parse_visualization,
     parse_web_request,
+    split_design_request,
 )
+from design import design_canvas
 from images import search_images
 from voice import synthesize
 from web import research
@@ -214,12 +216,21 @@ def create_app() -> Flask:
         # means "read the pages, then answer from them".
         sources = []
         web_query = parse_web_request(raw_reply) if Config.TAVILY_API_KEY else None
+        design = None
         if web_query:
             reply, visualization, sources = _answer_with_web(message, web_query)
         else:
+            # A <<DESIGN brief>> line hands the work to the designer; the
+            # frontend fetches it from /canvas/design while the butler speaks.
+            prose, brief = split_design_request(raw_reply)
+            if brief:
+                design = {"brief": brief}
             # Living Canvas: split prose from the optional visualization payload.
             # Fail-soft — any problem yields visualization=None, never an error.
-            reply, visualization = parse_visualization(raw_reply)
+            reply, visualization = parse_visualization(prose)
+            if design:
+                visualization = None
+                reply = reply or "Allow me a moment at the drafting table."
         if visualization and visualization["type"] == "phase_timeline":
             visualization["phases"] = _timeline_phases(get_phases(user_id))
             if not visualization["phases"]:
@@ -229,7 +240,7 @@ def create_app() -> Flask:
         create_activity_log(user_id, "butler_interaction", {})
 
         return {"butler_response": reply, "agent_context": agent_context, "visualization": visualization,
-                "sources": sources}, 200
+                "sources": sources, "design": design}, 200
 
     # --- Canvas: read the user's drawing, find images ----------------------
 
@@ -273,6 +284,23 @@ def create_app() -> Flask:
         except Exception as e:
             print(f"[images/search] failed: {e}")
             return err("Image search is unavailable right now.", 502)
+
+    @app.route("/api/v1/marquis/canvas/design", methods=["POST"])
+    @require_auth
+    def canvas_design():
+        """The designer realises a brief the butler handed over."""
+        brief = (request.get_json(silent=True) or {}).get("brief")
+        if not isinstance(brief, str) or not brief.strip() or len(brief) > 400:
+            return err("brief is required (max 400 characters).", 400)
+        try:
+            said, design = design_canvas(brief.strip())
+        except Exception as e:
+            print(f"[canvas/design] failed: {e}")
+            return err("The designer is unavailable right now.", 502)
+        if not design:
+            return err("The designer couldn't produce a usable composition.", 422)
+        create_activity_log(g.current_user["id"], "design_drafted", {"variants": len(design["variants"])})
+        return {"butler_response": said, "visualization": design}, 200
 
     @app.route("/api/v1/marquis/voice", methods=["POST"])
     @require_auth

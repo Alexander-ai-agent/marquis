@@ -351,7 +351,34 @@ WEB_INSTRUCTIONS = (
     "you can answer from what you already have."
 )
 
+SPOKEN_INSTRUCTIONS = (
+    "\n\nSPOKEN: Your reply is read aloud and shown as subtitles. Plain prose only: no markdown, no asterisks, "
+    "no bullet points or headings. Aim for under 60 words and never exceed 110; when there is more to show, "
+    "put it on the canvas rather than in your words."
+)
+
+DESIGN_INSTRUCTIONS = (
+    "\n\nTHE DESIGNER: You have a designer at your side. When the founder asks for something that must be "
+    "designed rather than diagrammed (a logo, mark, icon, wordmark, poster, card, cover, or the look of a page), "
+    "do not draw it yourself and do not use a drawing block. Say in one or two sentences what direction you are "
+    "taking, then end your reply with ONE final line, exactly: <<DESIGN brief>> where brief is a precise design "
+    "brief of at most 300 characters (subject, name, the concept, constraints, what it must evoke). The designer "
+    "renders it on the canvas while you speak. Drawing blocks remain for diagrams, flows and explanations."
+)
+
 _WEB_LINE = re.compile(r"<<WEB\s+([^<>\n]{2,200}?)\s*>>")
+_DESIGN_LINE = re.compile(r"\n?[ \t]*<<DESIGN\s+([^<>]{2,400}?)\s*>>", re.DOTALL)
+
+
+def split_design_request(reply: str) -> Tuple[str, Optional[str]]:
+    """(prose without the tag, design brief or None) for a butler reply."""
+    if not isinstance(reply, str):
+        return "", None
+    match = _DESIGN_LINE.search(reply)
+    if not match:
+        return reply, None
+    brief = " ".join(match.group(1).split())[:300]
+    return _DESIGN_LINE.sub("", reply).strip(), brief
 
 
 def parse_web_request(reply: str) -> Optional[str]:
@@ -367,7 +394,9 @@ def build_system_prompt(agent_context: dict, prompt_improvements: list, business
         BUTLER_SYSTEM_PROMPT_TEMPLATE.format(
             agent_context=_format_agent_context_block(agent_context, prompt_improvements)
         )
+        + SPOKEN_INSTRUCTIONS
         + CANVAS_INSTRUCTIONS
+        + DESIGN_INSTRUCTIONS
         + (WEB_INSTRUCTIONS if web_enabled else "")
         + _vocabulary_instructions(business_type)
     )
