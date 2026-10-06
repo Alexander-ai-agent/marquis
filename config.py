@@ -19,6 +19,9 @@ class Config:
 
     ANTHROPIC_API_KEY: str = _env("ANTHROPIC_API_KEY")
     CLAUDE_MODEL: str = "claude-sonnet-4-6"
+    # The designer (/canvas/design) uses the strongest model for craft; it
+    # falls back to CLAUDE_MODEL if the key can't use this one.
+    DESIGN_MODEL: str = _env("DESIGN_MODEL", "claude-opus-5-5")
 
     JWT_SECRET: str = _env("JWT_SECRET")
     JWT_ALGORITHM: str = "HS256"
