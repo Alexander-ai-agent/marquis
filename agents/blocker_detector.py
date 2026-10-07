@@ -10,11 +10,24 @@ from datetime import datetime, timezone
 
 from supabase_client import get_recent_activity, get_recent_conversations
 
-_STOPWORDS = {
-    "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for",
-    "is", "it", "this", "that", "i", "you", "we", "my", "your", "our",
-    "with", "how", "what", "do", "does", "should", "can", "about",
-}
+# Function words and conversational filler. A "topic" must be a content
+# word: "right", "now", "think" or "want" recurring proves nothing.
+_STOPWORDS = set("""
+a about above after again against all also am an and any are aren't as at be because been before being
+below between both but by can can't cannot could couldn't did didn't do does doesn't doing don't down
+during each few for from further get gets getting got had hadn't has hasn't have haven't having he her
+here hers herself him himself his how i i'd i'll i'm i've if in into is isn't it it's its itself just
+let's me more most mustn't my myself no nor not now of off on once only or other ought our ours
+ourselves out over own same shan't she should shouldn't so some such than that that's the their theirs
+them themselves then there there's these they they'd they'll they're they've this those through to too
+under until up very was wasn't we we'd we'll we're we've were weren't what what's when where which while
+who whom why will with won't would wouldn't you you'd you'll you're you've your yours yourself
+yourselves
+okay ok yeah yes yep sure right well really actually basically maybe like thing things stuff lot lots
+think thought know want wanted need needs go going gonna make made take see look looking tell said say
+one two way something anything everything still even much many back thanks thank please good great fine
+today tomorrow week month time day days already kind sort bit quite pretty let alright hey hi hello
+""".split())
 
 
 def _keywords(text: str) -> set:

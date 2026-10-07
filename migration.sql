@@ -140,3 +140,92 @@ CREATE POLICY "Users manage own custom_agents" ON public.custom_agents
 
 CREATE POLICY "Users manage own tool_connections" ON public.tool_connections
   FOR ALL USING (auth.uid() = user_id);
+
+-- ======================================================================
+-- Specialist agents (Oct 2026). Additive only: new tables + one function.
+-- The catalog lives in code (agents/catalog.py); these hold each user's
+-- choices, every run's output, what they enter, and a shared search cache.
+-- RLS on with no public policies: only the backend's service key reads/writes.
+-- ======================================================================
+CREATE TABLE IF NOT EXISTS public.user_agents (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id        uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  agent_key      text NOT NULL,
+  settings       jsonb NOT NULL DEFAULT '{}',
+  run_mode       text NOT NULL DEFAULT 'on_demand' CHECK (run_mode IN ('on_demand','scheduled')),
+  interval_hours int CHECK (interval_hours BETWEEN 6 AND 168),
+  state          text NOT NULL DEFAULT 'IDLE' CHECK (state IN ('IDLE','WORKING','FLAGGED')),
+  enabled        boolean NOT NULL DEFAULT true,
+  last_run_at    timestamptz,
+  next_run_at    timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (user_id, agent_key)
+);
+
+CREATE TABLE IF NOT EXISTS public.agent_runs (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_agent_id uuid NOT NULL REFERENCES public.user_agents(id) ON DELETE CASCADE,
+  user_id       uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  trigger       text NOT NULL CHECK (trigger IN ('manual','schedule','alfred')),
+  status        text NOT NULL CHECK (status IN ('ok','error','skipped')),
+  output        jsonb NOT NULL DEFAULT '{}',
+  flagged       boolean NOT NULL DEFAULT false,
+  model         text,
+  search_calls  int NOT NULL DEFAULT 0,
+  input_tokens  int NOT NULL DEFAULT 0,
+  output_tokens int NOT NULL DEFAULT 0,
+  surfaced_at   timestamptz,
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.agent_entries (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_agent_id uuid NOT NULL REFERENCES public.user_agents(id) ON DELETE CASCADE,
+  user_id       uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  kind          text NOT NULL CHECK (kind IN ('metric','log')),
+  metric        text,
+  value         numeric,
+  body          jsonb NOT NULL DEFAULT '{}',
+  occurred_at   timestamptz NOT NULL DEFAULT now(),
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.search_cache (
+  query_hash text PRIMARY KEY,
+  query      text NOT NULL,
+  results    jsonb NOT NULL,
+  fetched_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_agents_user ON public.user_agents(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_agents_due ON public.user_agents(next_run_at)
+  WHERE enabled AND run_mode = 'scheduled';
+CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON public.agent_runs(user_agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_user_month ON public.agent_runs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_entries_agent ON public.agent_entries(user_agent_id, occurred_at DESC);
+
+-- Claim due scheduled agents atomically (SKIP LOCKED: two workers never take
+-- the same row). Also reclaims any agent stuck WORKING > 15 minutes, so a
+-- crashed run is retried rather than leaving the agent stuck.
+CREATE OR REPLACE FUNCTION public.claim_due_agents(max_rows int)
+RETURNS SETOF public.user_agents LANGUAGE sql AS $$
+  UPDATE public.user_agents u
+     SET state = 'WORKING',
+         next_run_at = now() + make_interval(hours => COALESCE(u.interval_hours, 24)),
+         updated_at = now()
+   WHERE u.id IN (
+     SELECT id FROM public.user_agents
+      WHERE enabled AND (
+              (run_mode = 'scheduled' AND state <> 'WORKING' AND next_run_at <= now())
+           OR (state = 'WORKING' AND updated_at < now() - interval '15 minutes'))
+      ORDER BY next_run_at NULLS FIRST
+      LIMIT max_rows
+      FOR UPDATE SKIP LOCKED)
+  RETURNING u.*;
+$$;
+
+ALTER TABLE public.user_agents   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_runs    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.search_cache  ENABLE ROW LEVEL SECURITY;

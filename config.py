@@ -26,6 +26,20 @@ class Config:
     # inside the request timeout.
     SITE_MODEL: str = _env("SITE_MODEL", "claude-sonnet-4-6")
 
+    # Specialist agents: default model per archetype (a catalog entry may
+    # override), and per-user caps. All overridable in the environment.
+    AGENT_MODEL_WATCHER: str = _env("AGENT_MODEL_WATCHER", "claude-haiku-4-5")
+    AGENT_MODEL_REVIEWER: str = _env("AGENT_MODEL_REVIEWER", "claude-haiku-4-5")
+    AGENT_MODEL_TRACKER: str = _env("AGENT_MODEL_TRACKER", "claude-haiku-4-5")
+    AGENT_MODEL_DRAFTER: str = _env("AGENT_MODEL_DRAFTER", "claude-sonnet-4-6")
+    AGENT_CAP_SCHEDULED_WATCHER_RUNS: int = int(_env("AGENT_CAP_SCHEDULED_WATCHER_RUNS", "120"))
+    AGENT_CAP_ON_DEMAND_RUNS: int = int(_env("AGENT_CAP_ON_DEMAND_RUNS", "40"))
+    AGENT_CAP_RUNS_PER_DAY: int = int(_env("AGENT_CAP_RUNS_PER_DAY", "6"))
+    AGENT_CAP_ENABLED: int = int(_env("AGENT_CAP_ENABLED", "12"))
+    # Shared secret the Railway cron service sends to /internal/agents/run-due.
+    # Unset -> the endpoint refuses every request.
+    CRON_SECRET: str = _env("CRON_SECRET")
+
     JWT_SECRET: str = _env("JWT_SECRET")
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRY_DAYS: int = 7

@@ -1,5 +1,7 @@
 """Marquis backend — Flask application: the 6 original API routes plus onboarding
 (questions, pathway) and phase completion added for the Sep 24 frontend redesign."""
+import hmac
+import json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -36,6 +38,21 @@ from butler import (
 )
 from design import design_canvas
 from site_builder import build_site
+from specialists import store
+from specialists.briefing import alfred_context, my_agents
+from specialists.catalog import (
+    BUSINESS_TYPE_CATEGORY,
+    CATALOG,
+    CATEGORIES,
+    LIMITS,
+    entry as catalog_entry,
+    public as catalog_public,
+)
+from specialists.engines import CapReached, run_agent, validate_settings
+
+# Scheduled agents run per cron call (every 30 min). Kept small so one call
+# finishes well inside the worker timeout.
+RUN_DUE_BATCH = 6
 from images import search_images
 from voice import synthesize
 from web import research
@@ -203,6 +220,13 @@ def create_app() -> Flask:
         blocker = run_blocker_detector(user_id)
         enhancement = run_enhancement_suggester(user_id)
         agent_context = build_agent_context(performance, pathway, blocker, enhancement)
+        try:
+            specialists = alfred_context(user_id)
+        except Exception as e:  # specialists are additive; the core four still answer
+            print(f"[conversation] specialist context unavailable: {e}")
+            specialists = ""
+        if specialists:
+            agent_context["specialists"] = specialists
 
         prompt_improvements = get_approved_prompt_improvements()
 
@@ -292,6 +316,138 @@ def create_app() -> Flask:
         except Exception as e:
             print(f"[images/search] failed: {e}")
             return err("Image search is unavailable right now.", 502)
+
+    # --- Specialist agents ------------------------------------------------
+
+    @app.route("/api/v1/marquis/agents/catalog", methods=["GET"])
+    @require_auth
+    def agents_catalog():
+        """Every specialist on offer, grouped by category, plus the user's own category."""
+        suggested = BUSINESS_TYPE_CATEGORY.get(g.current_user.get("business_type") or "", "other")
+        return {
+            "categories": CATEGORIES,
+            "suggested_category": suggested,
+            "agents": [catalog_public(a) for a in CATALOG.values()],
+            "limits": {k: LIMITS[k] for k in ("enabled_specialists", "min_interval_hours", "max_interval_hours")},
+        }, 200
+
+    @app.route("/api/v1/marquis/agents/mine", methods=["GET"])
+    @require_auth
+    def agents_mine():
+        return {"agents": my_agents(g.current_user["id"])}, 200
+
+    @app.route("/api/v1/marquis/agents/mine", methods=["POST"])
+    @require_auth
+    def agents_enable():
+        """Enable a specialist (or update it if already enabled)."""
+        data = request.get_json(silent=True) or {}
+        user_id = g.current_user["id"]
+        entry_ = catalog_entry(data.get("agent_key") or "")
+        if not entry_:
+            return err("Unknown agent.", 400)
+        current = store.list_user_agents(user_id)
+        if not any(u["agent_key"] == entry_["key"] for u in current) and len(current) >= LIMITS["enabled_specialists"]:
+            return err(f"You can enable up to {LIMITS['enabled_specialists']} specialists.", 400)
+        fields, problem = _agent_fields(entry_, data, require_settings=True)
+        if problem:
+            return err(problem, 400)
+        row = store.upsert_user_agent(user_id, entry_["key"], {**fields, "enabled": True, "state": "IDLE"})
+        create_activity_log(user_id, "agent_enabled", {"agent": entry_["key"]})
+        return {"agent": row}, 201
+
+    @app.route("/api/v1/marquis/agents/mine/<agent_id>", methods=["PATCH"])
+    @require_auth
+    def agents_update(agent_id):
+        ua = store.get_user_agent(g.current_user["id"], agent_id)
+        if not ua:
+            return err("Resource not found.", 404)
+        data = request.get_json(silent=True) or {}
+        fields, problem = _agent_fields(catalog_entry(ua["agent_key"]), data, require_settings=False, current=ua)
+        if problem:
+            return err(problem, 400)
+        if isinstance(data.get("enabled"), bool):
+            fields["enabled"] = data["enabled"]
+        return {"agent": store.update_user_agent(ua["id"], fields)}, 200
+
+    @app.route("/api/v1/marquis/agents/mine/<agent_id>", methods=["DELETE"])
+    @require_auth
+    def agents_remove(agent_id):
+        if not store.get_user_agent(g.current_user["id"], agent_id):
+            return err("Resource not found.", 404)
+        store.delete_user_agent(g.current_user["id"], agent_id)
+        return {"removed": agent_id}, 200
+
+    @app.route("/api/v1/marquis/agents/mine/<agent_id>/run", methods=["POST"])
+    @require_auth
+    def agents_run(agent_id):
+        """Run a specialist now (on demand)."""
+        user_id = g.current_user["id"]
+        ua = store.get_user_agent(user_id, agent_id)
+        if not ua or not ua["enabled"]:
+            return err("Resource not found.", 404)
+        req = (request.get_json(silent=True) or {}).get("request") or ""
+        if not isinstance(req, str) or len(req) > 500:
+            return err("request must be text (max 500 characters).", 400)
+        try:
+            run = run_agent(user_id, ua, "manual", request=req)
+        except CapReached as e:
+            return err(str(e), 429)
+        return {"run": run}, 200
+
+    @app.route("/api/v1/marquis/agents/mine/<agent_id>/entries", methods=["POST"])
+    @require_auth
+    def agents_add_entry(agent_id):
+        """Log a figure (Tracker) or an entry (Reviewer)."""
+        user_id = g.current_user["id"]
+        ua = store.get_user_agent(user_id, agent_id)
+        entry_ = catalog_entry(ua["agent_key"]) if ua else None
+        if not entry_ or entry_["archetype"] not in ("tracker", "reviewer"):
+            return err("This agent doesn't take entries.", 400 if ua else 404)
+        data = request.get_json(silent=True) or {}
+        row = {"user_agent_id": ua["id"], "user_id": user_id}
+        if entry_["archetype"] == "tracker":
+            value = data.get("value")
+            if not isinstance(data.get("metric"), str) or not data["metric"].strip() \
+                    or not isinstance(value, (int, float)) or isinstance(value, bool):
+                return err("metric (text) and value (number) are required.", 400)
+            row.update(kind="metric", metric=data["metric"].strip()[:40], value=value,
+                       body={"mock": True} if data.get("mock") is True else {})
+        else:
+            body = data.get("body")
+            if not isinstance(body, dict) or not body or len(json.dumps(body)) > 4000:
+                return err("body must be a non-empty object (max 4000 characters).", 400)
+            row.update(kind="log", body={**body, **({"mock": True} if data.get("mock") is True else {})})
+        if isinstance(data.get("occurred_at"), str):
+            row["occurred_at"] = data["occurred_at"][:40]
+        stored = store.add_entry(row)
+        result = {"entry": stored}
+        if entry_["archetype"] == "tracker":
+            # Trackers check limits whenever a figure arrives (cheap: no model unless flagged).
+            try:
+                result["run"] = run_agent(user_id, ua, "manual")
+            except CapReached as e:
+                result["note"] = str(e)
+        return result, 201
+
+    @app.route("/internal/agents/run-due", methods=["POST"])
+    def agents_run_due():
+        """Called by the Railway cron service every 30 minutes. Requires the
+        shared secret; anything else is refused before any work happens."""
+        supplied = request.headers.get("X-Cron-Secret", "")
+        if not Config.CRON_SECRET or not hmac.compare_digest(supplied.encode(), Config.CRON_SECRET.encode()):
+            return err("Not found.", 404)
+        claimed = store.claim_due_agents(RUN_DUE_BATCH)
+        done, capped, failed = 0, 0, 0
+        for ua in claimed:
+            try:
+                run_agent(ua["user_id"], ua, "schedule")
+                done += 1
+            except CapReached:
+                capped += 1
+            except Exception as e:
+                failed += 1
+                print(f"[run-due] {ua.get('agent_key')} failed: {e}")
+        return {"claimed": len(claimed), "ran": done, "capped": capped, "failed": failed}, 200
 
     @app.route("/api/v1/marquis/canvas/design", methods=["POST"])
     @require_auth
@@ -631,6 +787,28 @@ def create_app() -> Flask:
         return err("Something went wrong.", 500)
 
     return app
+
+
+def _agent_fields(entry_: dict, data: dict, require_settings: bool, current: Optional[dict] = None):
+    """Validated user_agents fields from a request -> (fields, error or None)."""
+    fields = {}
+    if require_settings or "settings" in data:
+        settings, problem = validate_settings(entry_, data.get("settings"))
+        if problem:
+            return None, problem
+        fields["settings"] = settings
+    run_mode = data.get("run_mode") or (current or {}).get("run_mode") or entry_["run_mode"]["default"]
+    if run_mode not in ("on_demand", "scheduled"):
+        return None, "run_mode must be on_demand or scheduled."
+    if run_mode == "scheduled" and entry_["archetype"] != "watcher" and entry_["archetype"] != "reviewer":
+        return None, "Only watchers and reviewers run on a schedule."
+    hours = data.get("interval_hours", (current or {}).get("interval_hours") or entry_["run_mode"]["interval_hours"] or 24)
+    if not isinstance(hours, int) or isinstance(hours, bool) or not LIMITS["min_interval_hours"] <= hours <= LIMITS["max_interval_hours"]:
+        return None, f"interval_hours must be {LIMITS['min_interval_hours']}-{LIMITS['max_interval_hours']}."
+    fields.update(run_mode=run_mode, interval_hours=hours)
+    if run_mode == "scheduled" and (current is None or current.get("run_mode") != "scheduled"):
+        fields["next_run_at"] = datetime.now(timezone.utc).isoformat()   # first run on the next cron tick
+    return fields, None
 
 
 def _public_sources(sources: list) -> list:

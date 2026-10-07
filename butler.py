@@ -368,6 +368,9 @@ def _format_agent_context_block(agent_context: dict, prompt_improvements: list) 
         f"- {label.capitalize()}: {agent_context[label]}"
         for label in ("performance", "pathway", "blocker", "enhancement")
     ]
+    if agent_context.get("specialists"):
+        # Already capped and sanitized (specialists/safety.context_block).
+        lines.append(agent_context["specialists"])
     if prompt_improvements:
         lines.append("Approved behavior improvements to apply:")
         lines.extend(f"- {row['suggestion']} ({row.get('reason', '')})" for row in prompt_improvements)
