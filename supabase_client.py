@@ -108,16 +108,75 @@ def get_active_phase(user_id: str) -> Optional[dict]:
 
 # --- Conversations -----------------------------------------------------
 
-def create_conversation(user_id: str, role: str, content: str) -> dict:
-    """Insert one conversation turn (role: 'user' or 'butler')."""
+def create_conversation(user_id: str, role: str, content: str,
+                        exchange_id: Optional[str] = None, meta: Optional[dict] = None) -> dict:
+    """Insert one conversation turn (role: 'user' or 'butler'). Both turns of
+    an exchange share an exchange_id; `meta` keeps what Alfred attached."""
     payload = {
         "user_id": user_id,
         "role": role,
         "content": content,
         "created_at": utcnow_iso(),
     }
+    if exchange_id:
+        payload["exchange_id"] = exchange_id
+    if meta:
+        payload["meta"] = meta
     response = get_client().table("conversations").insert(payload).execute()
     return response.data[0]
+
+
+def get_conversation_rows(user_id: str, limit: int, before: Optional[str] = None) -> list:
+    """Newest-first conversation rows for this user only, optionally older than `before` (ISO time)."""
+    query = get_client().table("conversations").select("*").eq("user_id", user_id)
+    if before:
+        query = query.lt("created_at", before)
+    return query.order("created_at", desc=True).limit(limit).execute().data or []
+
+
+def count_user_messages(user_id: str) -> int:
+    """How many questions this user has asked (one per exchange)."""
+    res = (get_client().table("conversations").select("id", count="exact")
+           .eq("user_id", user_id).eq("role", "user").execute())
+    return res.count or 0
+
+
+# --- Canvas items (creations) ----------------------------------------------
+
+_ITEM_HEADER_COLUMNS = "id,exchange_id,kind,title,x,y,w,h,dismissed,created_at,updated_at"
+
+
+def create_canvas_item(user_id: str, kind: str, title: str, spec: dict, exchange_id: Optional[str] = None) -> dict:
+    row = {"user_id": user_id, "kind": kind, "title": title, "spec": spec}
+    if exchange_id:
+        row["exchange_id"] = exchange_id
+    return get_client().table("canvas_items").insert(row).execute().data[0]
+
+
+def list_canvas_headers(user_id: str, limit: int, before: Optional[str] = None) -> list:
+    """Newest-first headers (no spec) of this user's undismissed items."""
+    query = (get_client().table("canvas_items").select(_ITEM_HEADER_COLUMNS)
+             .eq("user_id", user_id).eq("dismissed", False))
+    if before:
+        query = query.lt("created_at", before)
+    return query.order("created_at", desc=True).limit(limit).execute().data or []
+
+
+def get_canvas_item(user_id: str, item_id: str) -> Optional[dict]:
+    res = (get_client().table("canvas_items").select("*")
+           .eq("user_id", user_id).eq("id", item_id).limit(1).execute())
+    return res.data[0] if res.data else None
+
+
+def update_canvas_item(user_id: str, item_id: str, fields: dict) -> Optional[dict]:
+    res = (get_client().table("canvas_items").update({**fields, "updated_at": utcnow_iso()})
+           .eq("user_id", user_id).eq("id", item_id).execute())
+    return res.data[0] if res.data else None
+
+
+def delete_canvas_item(user_id: str, item_id: str) -> bool:
+    res = get_client().table("canvas_items").delete().eq("user_id", user_id).eq("id", item_id).execute()
+    return bool(res.data)
 
 
 def get_recent_conversations(user_id: str, days: int = 30, limit: int = 200) -> list:

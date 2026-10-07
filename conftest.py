@@ -9,7 +9,7 @@ collecting test modules, which is what makes that ordering guaranteed.
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -45,6 +45,9 @@ class FakeDB:
         self.conversations: list[dict] = []
         self.activity_logs: list[dict] = []
         self.prompt_improvements: list[dict] = []
+        self.canvas_items: list[dict] = []
+        self._seq = 0
+        self._base = datetime.now(timezone.utc)
 
     # --- users ---
     def create_user(self, email, password_hash, name):
@@ -100,16 +103,60 @@ class FakeDB:
         return row
 
     # --- conversations ---
-    def create_conversation(self, user_id, role, content):
+    def _stamp(self):
+        """Strictly increasing timestamps, so ordering never ties in a fast test."""
+        self._seq += 1
+        return (self._base + timedelta(microseconds=self._seq)).isoformat()
+
+    def create_conversation(self, user_id, role, content, exchange_id=None, meta=None):
         row = {
             "id": str(uuid.uuid4()),
             "user_id": user_id,
             "role": role,
             "content": content,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "exchange_id": exchange_id,
+            "meta": meta or {},
+            "created_at": self._stamp(),
         }
         self.conversations.append(row)
         return row
+
+    def get_conversation_rows(self, user_id, limit, before=None):
+        rows = [c for c in self.conversations if c["user_id"] == user_id and (before is None or c["created_at"] < before)]
+        return sorted(rows, key=lambda c: c["created_at"], reverse=True)[:limit]
+
+    def count_user_messages(self, user_id):
+        return sum(1 for c in self.conversations if c["user_id"] == user_id and c["role"] == "user")
+
+    # --- canvas items ---
+    def create_canvas_item(self, user_id, kind, title, spec, exchange_id=None):
+        row = {"id": str(uuid.uuid4()), "user_id": user_id, "exchange_id": exchange_id, "kind": kind, "title": title,
+               "spec": spec, "x": None, "y": None, "w": None, "h": None, "dismissed": False,
+               "dismissed_at": None, "created_at": self._stamp(), "updated_at": self._stamp()}
+        self.canvas_items.append(row)
+        return dict(row)
+
+    def list_canvas_headers(self, user_id, limit, before=None):
+        rows = [i for i in self.canvas_items if i["user_id"] == user_id and not i["dismissed"]
+                and (before is None or i["created_at"] < before)]
+        rows = sorted(rows, key=lambda i: i["created_at"], reverse=True)[:limit]
+        return [{k: v for k, v in r.items() if k not in ("spec", "user_id", "dismissed_at")} for r in rows]
+
+    def get_canvas_item(self, user_id, item_id):
+        return next((dict(i) for i in self.canvas_items if i["user_id"] == user_id and i["id"] == item_id), None)
+
+    def update_canvas_item(self, user_id, item_id, fields):
+        for i in self.canvas_items:
+            if i["user_id"] == user_id and i["id"] == item_id:
+                i.update(fields)
+                i["updated_at"] = self._stamp()
+                return dict(i)
+        return None
+
+    def delete_canvas_item(self, user_id, item_id):
+        before = len(self.canvas_items)
+        self.canvas_items = [i for i in self.canvas_items if not (i["user_id"] == user_id and i["id"] == item_id)]
+        return len(self.canvas_items) < before
 
     def get_recent_conversations(self, user_id, days=30, limit=200):
         rows = [c for c in self.conversations if c["user_id"] == user_id]
@@ -173,12 +220,16 @@ _PATCH_TARGETS = {
         "create_conversation", "get_recent_conversations", "get_last_conversation",
         "create_activity_log", "get_recent_activity", "get_approved_prompt_improvements",
         "update_user", "get_phase_by_id", "create_phase", "update_phase",
+        "get_conversation_rows", "count_user_messages", "create_canvas_item", "list_canvas_headers",
+        "get_canvas_item", "update_canvas_item", "delete_canvas_item",
     ],
     app_module: [
         "create_activity_log", "create_conversation", "create_user", "get_active_phase",
         "get_approved_prompt_improvements", "get_last_conversation", "get_phases",
         "get_recent_activity", "get_user_by_email",
         "update_user", "get_phase_by_id", "create_phase", "update_phase", "get_recent_conversations",
+        "get_conversation_rows", "count_user_messages", "create_canvas_item", "list_canvas_headers",
+        "get_canvas_item", "update_canvas_item", "delete_canvas_item",
     ],
     auth_utils: ["get_user_by_id"],
     performance_analyst: ["get_active_phase", "get_recent_activity", "get_recent_conversations"],

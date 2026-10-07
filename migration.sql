@@ -229,3 +229,31 @@ ALTER TABLE public.user_agents   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.agent_runs    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.agent_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.search_cache  ENABLE ROW LEVEL SECURITY;
+
+-- ======================================================================
+-- Persistent chats and canvas items (Oct 2026). Additive only.
+-- exchange_id links a question to its answer; meta keeps what Alfred
+-- attached (sources). canvas_items holds every creation; `kind` is
+-- validated in code (canvas_items.py), not by a CHECK, so new kinds need
+-- no migration. RLS on with no public policies: backend service key only.
+-- ======================================================================
+ALTER TABLE public.conversations ADD COLUMN IF NOT EXISTS exchange_id uuid;
+ALTER TABLE public.conversations ADD COLUMN IF NOT EXISTS meta jsonb NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS idx_conversations_exchange ON public.conversations(user_id, exchange_id);
+
+CREATE TABLE IF NOT EXISTS public.canvas_items (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  exchange_id  uuid,
+  kind         text NOT NULL,
+  title        text NOT NULL DEFAULT '',
+  spec         jsonb NOT NULL,
+  x real, y real, w real, h real,
+  dismissed    boolean NOT NULL DEFAULT false,
+  dismissed_at timestamptz,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_canvas_items_user ON public.canvas_items(user_id, created_at DESC) WHERE NOT dismissed;
+CREATE INDEX IF NOT EXISTS idx_canvas_items_exchange ON public.canvas_items(exchange_id);
+ALTER TABLE public.canvas_items ENABLE ROW LEVEL SECURITY;

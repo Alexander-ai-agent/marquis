@@ -2,6 +2,7 @@
 (questions, pathway) and phase completion added for the Sep 24 frontend redesign."""
 import hmac
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -22,6 +23,8 @@ from auth_utils import (
     require_auth,
     verify_password,
 )
+import canvas_items as canvas_items_mod
+import history as history_mod
 from butler import (
     answer_from_web,
     build_agent_context,
@@ -62,7 +65,14 @@ from enhancement_library import get_enhancements
 from responses import err
 from supabase_client import (
     create_activity_log,
+    count_user_messages,
+    create_canvas_item,
     create_conversation,
+    delete_canvas_item,
+    get_canvas_item,
+    get_conversation_rows,
+    list_canvas_headers,
+    update_canvas_item,
     create_phase,
     create_user,
     days_since,
@@ -201,20 +211,23 @@ def create_app() -> Flask:
     def conversation():
         data = request.get_json(silent=True) or {}
         message = data.get("message")
-        history = data.get("conversation_history", [])
 
         if not message or not isinstance(message, str):
             return err("message is required.", 400)
         if len(message) > Config.MAX_MESSAGE_LENGTH:
             return err(f"message exceeds {Config.MAX_MESSAGE_LENGTH} characters.", 400)
-        if not isinstance(history, list):
+        # Older clients still send their own history. It is accepted and ignored:
+        # the model's memory comes from the database, so it survives a refresh.
+        if "conversation_history" in data and not isinstance(data["conversation_history"], list):
             return err("conversation_history must be a list.", 400)
         reply_style = data.get("reply_style") if data.get("reply_style") in REPLY_STYLES else "brief"
 
         user = g.current_user
         user_id = user["id"]
 
-        create_conversation(user_id, "user", message)
+        exchange_id = str(uuid.uuid4())
+        history = history_mod.model_messages(list(reversed(get_conversation_rows(user_id, MODEL_HISTORY_ROWS))))
+        create_conversation(user_id, "user", message, exchange_id=exchange_id)
 
         performance = run_performance_analyst(user_id)
         pathway = run_pathway_optimizer(user_id)
@@ -273,11 +286,14 @@ def create_app() -> Flask:
         # mock, and a trading user never receives a trade recommendation.
         reply = guard_reply(reply, user.get("business_type"), mock_figs, real_figs)
 
-        create_conversation(user_id, "butler", reply)
+        create_conversation(user_id, "butler", reply, exchange_id=exchange_id,
+                            meta={"sources": sources} if sources else None)
         create_activity_log(user_id, "butler_interaction", {})
+        items = _save_exchange_items(user_id, exchange_id, visualization, sources)
 
         return {"butler_response": reply, "agent_context": agent_context, "visualization": visualization,
-                "sources": sources, "design": design, "build": build}, 200
+                "sources": sources, "design": design, "build": build,
+                "exchange_id": exchange_id, "canvas_items": items}, 200
 
     # --- Canvas: read the user's drawing, find images ----------------------
 
@@ -306,7 +322,8 @@ def create_app() -> Flask:
         if not blueprint:
             return err("I couldn't make out a layout in that drawing.", 422)
         create_activity_log(g.current_user["id"], "drawing_interpreted", {"regions": len(blueprint["regions"])})
-        return {"butler_response": understood or "Here is what I read.", "visualization": blueprint}, 200
+        item = _save_item(g.current_user["id"], "blueprint", blueprint.get("title"), blueprint, _exchange_arg(data))
+        return {"butler_response": understood or "Here is what I read.", "visualization": blueprint, "item": item}, 200
 
     @app.route("/api/v1/marquis/images/search", methods=["GET"])
     @require_auth
@@ -469,7 +486,8 @@ def create_app() -> Flask:
     @require_auth
     def canvas_design():
         """The designer realises a brief the butler handed over."""
-        brief = (request.get_json(silent=True) or {}).get("brief")
+        data = request.get_json(silent=True) or {}
+        brief = data.get("brief")
         if not isinstance(brief, str) or not brief.strip() or len(brief) > 400:
             return err("brief is required (max 400 characters).", 400)
         try:
@@ -480,13 +498,15 @@ def create_app() -> Flask:
         if not design:
             return err("The designer couldn't produce a usable composition.", 422)
         create_activity_log(g.current_user["id"], "design_drafted", {"variants": len(design["variants"])})
-        return {"butler_response": said, "visualization": design}, 200
+        item = _save_item(g.current_user["id"], "design", design.get("title"), design, _exchange_arg(data))
+        return {"butler_response": said, "visualization": design, "item": item}, 200
 
     @app.route("/api/v1/marquis/canvas/site", methods=["POST"])
     @require_auth
     def canvas_site():
         """The builder makes the page the butler handed over."""
-        brief = (request.get_json(silent=True) or {}).get("brief")
+        data = request.get_json(silent=True) or {}
+        brief = data.get("brief")
         if not isinstance(brief, str) or not brief.strip() or len(brief) > 500:
             return err("brief is required (max 500 characters).", 400)
         try:
@@ -497,7 +517,92 @@ def create_app() -> Flask:
         if not site:
             return err("The builder couldn't produce a working page.", 422)
         create_activity_log(g.current_user["id"], "site_built", {"bytes": len(site["html"])})
-        return {"butler_response": said, "visualization": site}, 200
+        item = _save_item(g.current_user["id"], "site", site.get("title"), site, _exchange_arg(data))
+        return {"butler_response": said, "visualization": site, "item": item}, 200
+
+    # --- History and canvas items (persistence) ---------------------------
+
+    @app.route("/api/v1/marquis/history", methods=["GET"])
+    @require_auth
+    def history_get():
+        """This user's recent exchanges, newest first, paginated by `before`."""
+        user_id = g.current_user["id"]
+        limit = _int_arg("limit", history_mod.DEFAULT_PAGE, 1, history_mod.MAX_PAGE)
+        before, bad = _time_arg("before")
+        if bad:
+            return err("before must be an ISO timestamp.", 400)
+        out = history_mod.page(get_conversation_rows(user_id, limit * 2 + 1, before), limit)
+        out["total"] = count_user_messages(user_id)
+        return out, 200
+
+    @app.route("/api/v1/marquis/canvas/items", methods=["GET"])
+    @require_auth
+    def canvas_items_list():
+        """Headers of this user's undismissed items, newest first. Only the
+        newest comes with its full spec; the rest load when expanded."""
+        user_id = g.current_user["id"]
+        limit = _int_arg("limit", 30, 1, 50)
+        before, bad = _time_arg("before")
+        if bad:
+            return err("before must be an ISO timestamp.", 400)
+        rows = list_canvas_headers(user_id, limit + 1, before)
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        newest = None
+        if rows and not before:
+            full = get_canvas_item(user_id, rows[0]["id"])
+            newest = _live_item(user_id, full) if full else None
+        return {"items": [canvas_items_mod.public(r, with_spec=False) for r in rows], "newest": newest,
+                "has_more": has_more, "next_before": rows[-1]["created_at"] if has_more and rows else None}, 200
+
+    @app.route("/api/v1/marquis/canvas/items/<item_id>", methods=["GET"])
+    @require_auth
+    def canvas_item_get(item_id):
+        row = get_canvas_item(g.current_user["id"], item_id) if canvas_items_mod.is_uuid(item_id) else None
+        if not row:
+            return err("Resource not found.", 404)
+        return {"item": _live_item(g.current_user["id"], row)}, 200
+
+    @app.route("/api/v1/marquis/canvas/items/<item_id>", methods=["PATCH"])
+    @require_auth
+    def canvas_item_update(item_id):
+        """The user's own changes: edit in place, dismiss, or move/resize."""
+        user_id = g.current_user["id"]
+        row = get_canvas_item(user_id, item_id) if canvas_items_mod.is_uuid(item_id) else None
+        if not row:
+            return err("Resource not found.", 404)
+        data = request.get_json(silent=True) or {}
+        fields = {}
+        if "spec" in data:
+            if row["kind"] not in canvas_items_mod.EDITABLE_KINDS:
+                return err("This item cannot be edited.", 400)
+            clean = canvas_items_mod.clean_spec(row["kind"], data["spec"])
+            if not clean:
+                return err("That is not a valid " + row["kind"] + ".", 400)
+            if "sources" not in clean and (row.get("spec") or {}).get("sources"):
+                clean["sources"] = row["spec"]["sources"]
+            fields["spec"] = clean
+        if "dismissed" in data:
+            if not isinstance(data["dismissed"], bool):
+                return err("dismissed must be true or false.", 400)
+            fields["dismissed"] = data["dismissed"]
+            fields["dismissed_at"] = datetime.now(timezone.utc).isoformat() if data["dismissed"] else None
+        for key in ("x", "y", "w", "h"):
+            if key in data:
+                if not isinstance(data[key], (int, float)) or isinstance(data[key], bool):
+                    return err(f"{key} must be a number.", 400)
+                fields[key] = float(data[key])
+        if not fields:
+            return err("Nothing to change.", 400)
+        updated = update_canvas_item(user_id, item_id, fields)
+        return {"item": canvas_items_mod.public(updated, with_spec=False)}, 200
+
+    @app.route("/api/v1/marquis/canvas/items/<item_id>", methods=["DELETE"])
+    @require_auth
+    def canvas_item_delete(item_id):
+        if not canvas_items_mod.is_uuid(item_id) or not delete_canvas_item(g.current_user["id"], item_id):
+            return err("Resource not found.", 404)
+        return {"deleted": item_id}, 200
 
     @app.route("/api/v1/marquis/voice", methods=["POST"])
     @require_auth
@@ -825,6 +930,75 @@ def _agent_fields(entry_: dict, data: dict, require_settings: bool, current: Opt
     if run_mode == "scheduled" and (current is None or current.get("run_mode") != "scheduled"):
         fields["next_run_at"] = datetime.now(timezone.utc).isoformat()   # first run on the next cron tick
     return fields, None
+
+
+# Messages of history sent to the model, read from the database.
+MODEL_HISTORY_ROWS = 20
+
+
+def _int_arg(name: str, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(high, int(request.args.get(name, default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _time_arg(name: str):
+    """(ISO timestamp or None, bad) for an optional timestamp query argument."""
+    raw = request.args.get(name)
+    if not raw:
+        return None, False
+    raw = raw.replace(" ", "+")                    # a '+' in a URL arrives as a space
+    try:
+        datetime.fromisoformat(raw)
+    except ValueError:
+        return None, True
+    return raw, False
+
+
+def _exchange_arg(data: dict) -> Optional[str]:
+    value = data.get("exchange_id")
+    return value if canvas_items_mod.is_uuid(value) else None
+
+
+def _save_item(user_id: str, kind: str, title, spec: dict, exchange_id: Optional[str], live_spec: Optional[dict] = None):
+    """Validate and store one creation; returns the item as the page sees it,
+    or None. Saving is fail-soft: a failure never costs the user their answer."""
+    clean = canvas_items_mod.clean_spec(kind, spec)
+    if not clean:
+        print(f"[canvas] not saved, {kind} spec failed validation")
+        return None
+    try:
+        row = create_canvas_item(user_id, kind, str(title or clean.get("title") or "")[:80], clean, exchange_id)
+    except Exception as e:
+        print(f"[canvas] saving {kind} failed: {e}")
+        return None
+    item = canvas_items_mod.public(row)
+    if live_spec is not None:
+        item["spec"] = live_spec                    # e.g. a timeline with its phases filled in
+    return item
+
+
+def _save_exchange_items(user_id: str, exchange_id: str, visualization, sources: list) -> list:
+    """The creation an exchange produced (a canvas block, or the sources read)."""
+    if visualization:
+        spec = {**visualization, **({"sources": sources} if sources else {})}
+        item = _save_item(user_id, canvas_items_mod.kind_for(visualization["type"]), visualization.get("title"),
+                          spec, exchange_id, live_spec=spec)
+    elif sources:
+        item = _save_item(user_id, "sources", "What I read on your behalf",
+                          {"type": "sources", "title": "What I read on your behalf", "sources": sources}, exchange_id)
+    else:
+        return []
+    return [item] if item else []
+
+
+def _live_item(user_id: str, row: dict) -> dict:
+    """An item with data that must be current filled in when it is opened."""
+    item = canvas_items_mod.public(row)
+    if row["kind"] == "phase_timeline":
+        item["spec"] = {**(row.get("spec") or {}), "phases": _timeline_phases(get_phases(user_id))}
+    return item
 
 
 def _public_sources(sources: list) -> list:
