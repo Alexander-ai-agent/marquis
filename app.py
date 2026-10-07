@@ -348,10 +348,15 @@ def create_app() -> Flask:
         current = store.list_user_agents(user_id)
         if not any(u["agent_key"] == entry_["key"] for u in current) and len(current) >= LIMITS["enabled_specialists"]:
             return err(f"You can enable up to {LIMITS['enabled_specialists']} specialists.", 400)
-        fields, problem = _agent_fields(entry_, data, require_settings=True)
+        # enabled:false = chosen (e.g. at onboarding) but not set up yet: no
+        # settings required, and it never runs until enabled with settings.
+        enabled = data.get("enabled") is not False
+        fields, problem = _agent_fields(entry_, data, require_settings=enabled)
         if problem:
             return err(problem, 400)
-        row = store.upsert_user_agent(user_id, entry_["key"], {**fields, "enabled": True, "state": "IDLE"})
+        if not enabled:
+            fields.pop("next_run_at", None)
+        row = store.upsert_user_agent(user_id, entry_["key"], {**fields, "enabled": enabled, "state": "IDLE"})
         create_activity_log(user_id, "agent_enabled", {"agent": entry_["key"]})
         return {"agent": row}, 201
 
@@ -366,7 +371,13 @@ def create_app() -> Flask:
         if problem:
             return err(problem, 400)
         if isinstance(data.get("enabled"), bool):
+            if data["enabled"] and not ua["enabled"] and "settings" not in fields:
+                settings, problem = validate_settings(catalog_entry(ua["agent_key"]), ua.get("settings"))
+                if problem:
+                    return err(f"Finish setting it up first: {problem}", 400)
             fields["enabled"] = data["enabled"]
+            if data["enabled"] and fields.get("run_mode") == "scheduled":
+                fields["next_run_at"] = datetime.now(timezone.utc).isoformat()
         return {"agent": store.update_user_agent(ua["id"], fields)}, 200
 
     @app.route("/api/v1/marquis/agents/mine/<agent_id>", methods=["DELETE"])
