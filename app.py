@@ -49,6 +49,7 @@ from specialists.catalog import (
     public as catalog_public,
 )
 from specialists.engines import CapReached, run_agent, validate_settings
+from specialists.safety import guard_reply
 
 # Scheduled agents run per cron call (every 30 min). Kept small so one call
 # finishes well inside the worker timeout.
@@ -221,10 +222,10 @@ def create_app() -> Flask:
         enhancement = run_enhancement_suggester(user_id)
         agent_context = build_agent_context(performance, pathway, blocker, enhancement)
         try:
-            specialists = alfred_context(user_id)
+            specialists, mock_figs = alfred_context(user_id)
         except Exception as e:  # specialists are additive; the core four still answer
             print(f"[conversation] specialist context unavailable: {e}")
-            specialists = ""
+            specialists, mock_figs = "", set()
         if specialists:
             agent_context["specialists"] = specialists
 
@@ -267,6 +268,10 @@ def create_app() -> Flask:
             visualization["phases"] = _timeline_phases(get_phases(user_id))
             if not visualization["phases"]:
                 visualization = None
+
+        # Alfred keeps the specialists' rules: mock figures are always called
+        # mock, and a trading user never receives a trade recommendation.
+        reply = guard_reply(reply, user.get("business_type"), mock_figs)
 
         create_conversation(user_id, "butler", reply)
         create_activity_log(user_id, "butler_interaction", {})

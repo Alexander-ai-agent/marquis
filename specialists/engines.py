@@ -216,7 +216,7 @@ def run_tracker(entry_: dict, settings: dict, model: str, entries: list) -> dict
         note = _add_note(note, "Includes mock data.")
     if not flags:
         out["output"] = {"summary": "Within your limits." if latest else "Waiting for your first figures.",
-                         "items": [], "flags": [], "data_note": note}
+                         "items": [], "flags": [], "data_note": note, "mock": mock}
         return out
     facts = "; ".join(f"{f['metric']} is {f['value']:g}{f['unit']} against a {f['limit_kind']} of "
                       f"{f['limit']:g}{f['unit']} ({f['level']})" for f in flags)
@@ -224,7 +224,7 @@ def run_tracker(entry_: dict, settings: dict, model: str, entries: list) -> dict
                                 f"LIMIT CHECK: {facts}", MAX_TOKENS["tracker"])
     out.update(input_tokens=tin, output_tokens=tout)
     out["output"] = {"summary": clean_untrusted(data.get("summary"), 400) or facts, "items": [],
-                     "flags": flags, "data_note": note}
+                     "flags": flags, "data_note": note, "mock": mock}
     return out
 
 
@@ -247,13 +247,15 @@ def run_reviewer(entry_: dict, settings: dict, model: str, entries: list) -> dic
     note = data.get("data_note") or None
     if len(logs) < 5:
         note = _add_note(note, f"Only {len(logs)} entries: patterns are tentative.")
-    if any((e.get("body") or {}).get("mock") for e in logs):
+    mock = any((e.get("body") or {}).get("mock") for e in logs)
+    if mock:
         note = _add_note(note, "Includes mock data.")
     items = [{"text": clean_untrusted(p.get("text"), 300)
               + (f" ({int(p['count'])}×)" if isinstance(p.get("count"), (int, float)) else ""), "source_url": None}
              for p in (data.get("patterns") or []) if isinstance(p, dict)]
     return {"search_calls": 0, "input_tokens": tin, "output_tokens": tout, "flagged": bool(data.get("flagged")),
-            "output": {"summary": clean_untrusted(data.get("summary"), 400), "items": items[:6], "data_note": note}}
+            "output": {"summary": clean_untrusted(data.get("summary"), 400), "items": items[:6],
+                       "data_note": note, "mock": mock}}
 
 
 # --- Drafter ----------------------------------------------------------------

@@ -2,7 +2,7 @@
 and (capped, sanitized) what Alfred reads in AGENT CONTEXT."""
 from specialists import store
 from specialists.catalog import entry as catalog_entry, public
-from specialists.safety import context_block
+from specialists.safety import context_block, mock_figures
 
 
 def my_agents(user_id: str) -> list:
@@ -28,8 +28,8 @@ def my_agents(user_id: str) -> list:
     return out
 
 
-def alfred_context(user_id: str) -> str:
-    """Sanitized, capped lines for Alfred; FLAGGED agents first."""
+def _findings(user_id: str) -> list:
+    """Enabled specialists as findings; FLAGGED first."""
     agents = [a for a in my_agents(user_id) if a["enabled"]]
     agents.sort(key=lambda a: a["state"] != "FLAGGED")
     findings = []
@@ -37,5 +37,12 @@ def alfred_context(user_id: str) -> str:
         output = (a["latest"] or {}).get("output") or {}
         findings.append({"name": a["agent"]["name"], "state": a["state"],
                          "summary": output.get("summary") or "No run yet.",
-                         "items": output.get("items") or [], "data_note": output.get("data_note")})
-    return context_block(findings)
+                         "items": output.get("items") or [], "data_note": output.get("data_note"),
+                         "mock": bool(output.get("mock")), "flags": output.get("flags") or []})
+    return findings
+
+
+def alfred_context(user_id: str) -> tuple:
+    """(sanitized, capped text for Alfred, set of mock figures he must label)."""
+    findings = _findings(user_id)
+    return context_block(findings), mock_figures(findings)
