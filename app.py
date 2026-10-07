@@ -222,10 +222,10 @@ def create_app() -> Flask:
         enhancement = run_enhancement_suggester(user_id)
         agent_context = build_agent_context(performance, pathway, blocker, enhancement)
         try:
-            specialists, mock_figs = alfred_context(user_id)
+            specialists, mock_figs, real_figs = alfred_context(user_id)
         except Exception as e:  # specialists are additive; the core four still answer
             print(f"[conversation] specialist context unavailable: {e}")
-            specialists, mock_figs = "", set()
+            specialists, mock_figs, real_figs = "", set(), set()
         if specialists:
             agent_context["specialists"] = specialists
 
@@ -271,7 +271,7 @@ def create_app() -> Flask:
 
         # Alfred keeps the specialists' rules: mock figures are always called
         # mock, and a trading user never receives a trade recommendation.
-        reply = guard_reply(reply, user.get("business_type"), mock_figs)
+        reply = guard_reply(reply, user.get("business_type"), mock_figs, real_figs)
 
         create_conversation(user_id, "butler", reply)
         create_activity_log(user_id, "butler_interaction", {})

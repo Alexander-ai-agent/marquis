@@ -2,7 +2,7 @@
 and (capped, sanitized) what Alfred reads in AGENT CONTEXT."""
 from specialists import store
 from specialists.catalog import entry as catalog_entry, public
-from specialists.safety import context_block, mock_figures
+from specialists.safety import context_block, mock_figures, real_figures
 
 
 def my_agents(user_id: str) -> list:
@@ -43,6 +43,6 @@ def _findings(user_id: str) -> list:
 
 
 def alfred_context(user_id: str) -> tuple:
-    """(sanitized, capped text for Alfred, set of mock figures he must label)."""
+    """(sanitized, capped text for Alfred, mock figures he must label, real figures)."""
     findings = _findings(user_id)
-    return context_block(findings), mock_figures(findings)
+    return context_block(findings), mock_figures(findings), real_figures(findings)

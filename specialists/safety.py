@@ -72,9 +72,18 @@ def _norm(num: str) -> str:
 
 def mock_figures(findings: list) -> set:
     """Every figure in a mock-labelled finding (summary, items, limit flags), normalised."""
+    return _figures(findings, mock=True)
+
+
+def real_figures(findings: list) -> set:
+    """Every figure in a finding that is NOT mock-labelled, normalised."""
+    return _figures(findings, mock=False)
+
+
+def _figures(findings: list, mock: bool) -> set:
     figures = set()
     for f in findings:
-        if not f.get("mock"):
+        if bool(f.get("mock")) != mock:
             continue
         texts = [f.get("summary", "")] + [i.get("text", "") for i in f.get("items") or []]
         figures.update(_norm(n) for t in texts for n in _NUM.findall(str(t)))
@@ -85,17 +94,31 @@ def mock_figures(findings: list) -> set:
     return {n for n in figures if len(n.replace(".", "")) >= 2}   # a lone "6" proves nothing
 
 
-def label_mock_figures(reply: str, figures: set) -> str:
+_SAYS_MOCK = re.compile(r"\b(mock|test data|sample data)\b", re.IGNORECASE)
+
+
+def label_mock_figures(reply: str, figures: set, real: frozenset = frozenset()) -> str:
     """Backstop for the prompt rule: any sentence that quotes a mock figure
-    in digits must say it is mock; where it doesn't, say so after it."""
+    in digits must say it is mock; where it doesn't, say so after it.
+
+    A reply that has already said "mock" in an earlier sentence needs no
+    repeat, but only when every figure it cites came from mock runs. If it
+    also cites a real figure (`real`), the reader can't tell which is which
+    from one early mention, so each mock figure keeps its own label.
+    """
     if not figures or not reply:
         return reply
     parts = re.split(r"(?<=[.!?])(\s+)", reply)
+    cited = {_norm(n) for n in _NUM.findall(reply)}
+    mixed = bool(cited & real)               # a figure in both sets counts as real: label to be safe
+    said_mock = False
     for i in range(0, len(parts), 2):
         sentence = parts[i]
+        has_word = bool(_SAYS_MOCK.search(sentence))
         quoted = {_norm(n) for n in _NUM.findall(sentence)} & figures
-        if quoted and not re.search(r"\b(mock|test data|sample data)\b", sentence, re.IGNORECASE):
+        if quoted and not has_word and (mixed or not said_mock):
             parts[i] = sentence.rstrip() + (" " if sentence.rstrip()[-1:] in ".!?" else ". ") + "That is mock data."
+        said_mock = said_mock or has_word
     return "".join(parts)
 
 
@@ -126,9 +149,9 @@ def context_block(findings: list) -> str:
     return "\n".join(lines)
 
 
-def guard_reply(reply: str, business_type, mock_figs: set) -> str:
+def guard_reply(reply: str, business_type, mock_figs: set, real_figs: frozenset = frozenset()) -> str:
     """Rules Alfred shares with the specialist agents, enforced on his reply."""
-    reply = label_mock_figures(reply, mock_figs)
+    reply = label_mock_figures(reply, mock_figs, real_figs)
     if normalize_business_type(business_type) == "Trading" and contains_trade_advice(reply):
         reply = strip_trade_advice(reply) or "I can describe the conditions and the risks, but I won't tell you what to trade."
     return reply
