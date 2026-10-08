@@ -152,6 +152,17 @@ def test_one_user_never_loads_another_users_history_or_items(client, auth_header
     assert seen[-1] == []
 
 
+def test_a_reply_that_is_only_a_creation_still_has_words(client, auth_headers, mock_claude, fake_db):
+    """The model sometimes sends a canvas block and no prose. The page treats an
+    empty reply as a failure, so Alfred always says something, and nothing empty is stored."""
+    _, headers = auth_headers
+    mock_claude["reply"] = "<<CANVAS " + json.dumps(SHEET) + ">>"
+    body = ask(client, headers, "Make me a sheet")
+    assert body["butler_response"].strip()
+    assert body["canvas_items"] and body["canvas_items"][0]["kind"] == "sheet"
+    assert all(row["content"].strip() for row in fake_db.conversations)
+
+
 def test_item_ids_that_are_not_uuids_are_not_found(client, auth_headers):
     _, headers = auth_headers
     for bad in ("1", "..%2F..%2Fetc%2Fpasswd", "x%27%20or%20%271%27=%271"):

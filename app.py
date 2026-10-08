@@ -284,6 +284,8 @@ def create_app() -> Flask:
 
         # Alfred keeps the specialists' rules: mock figures are always called
         # mock, and a trading user never receives a trade recommendation.
+        if not reply.strip() and (visualization or sources):
+            reply = "Here it is, sir." if visualization else "Here is what I read, sir."   # a creation alone is still spoken for
         reply = guard_reply(reply, user.get("business_type"), mock_figs, real_figs)
 
         create_conversation(user_id, "butler", reply, exchange_id=exchange_id,

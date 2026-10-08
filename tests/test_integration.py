@@ -45,7 +45,7 @@ def test_conversation_logs_both_turns_and_activity(client, auth_headers, fake_db
     assert len(activity) == 1
 
 
-def test_conversation_uses_conversation_history(client, auth_headers, mock_claude):
+def test_an_older_page_may_still_send_its_own_history_and_it_is_ignored(client, auth_headers, mock_claude):
     _, headers = auth_headers
     history = [{"role": "user", "content": "earlier message"}, {"role": "assistant", "content": "earlier reply"}]
 
